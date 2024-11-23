@@ -1,8 +1,9 @@
+import os
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 # Инициализация бота
-TOKEN = "7633452675:AAG4tINoIIE0X_-Y1Oom_s6_mFx09Q0Duxg"
+TOKEN = os.getenv('TOKEN')  # Токен теперь берется из переменной окружения
 bot = telebot.TeleBot(TOKEN)
 
 # Хранилище данных о бронированиях
