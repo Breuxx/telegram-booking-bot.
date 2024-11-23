@@ -2,8 +2,11 @@ import os
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Инициализация бота
-TOKEN = os.getenv('TOKEN')  # Токен теперь берется из переменной окружения
+# Получение токена из переменной окружения
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Не найден токен бота. Убедитесь, что TELEGRAM_BOT_TOKEN установлен.")
+
 bot = telebot.TeleBot(TOKEN)
 
 # Хранилище данных о бронированиях
@@ -17,7 +20,6 @@ def get_free_computers():
     all_computers = set(range(1, 43))
     return sorted(all_computers - booked_computers)
 
-# Команда /start
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(
@@ -25,7 +27,6 @@ def start(message):
         "Добро пожаловать! Напишите /book, чтобы забронировать компьютеры."
     )
 
-# Команда для бронирования компьютеров
 @bot.message_handler(commands=['book'])
 def book_computers(message):
     free_computers = get_free_computers()
@@ -40,10 +41,8 @@ def book_computers(message):
     )
     bot.register_next_step_handler(message, get_booking_details)
 
-# Обработка введенных данных о бронировании
 def get_booking_details(message):
     try:
-        # Разбор введенного диапазона
         if '-' in message.text:
             start, end = map(int, message.text.split('-'))
             computers = range(start, end + 1)
@@ -58,7 +57,6 @@ def get_booking_details(message):
             )
             return book_computers(message)
 
-        # Сохраняем список компьютеров и переходим к следующему шагу
         bot.send_message(message.chat.id, "Введите ваше имя:")
         bot.register_next_step_handler(message, lambda msg: get_name(msg, computers))
     except ValueError:
@@ -72,8 +70,6 @@ def get_name(message, computers):
 
 def get_surname(message, computers, name):
     surname = message.text
-
-    # Добавляем кнопку для отправки номера телефона
     markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
     button_phone = KeyboardButton("Отправить номер телефона", request_contact=True)
     markup.add(button_phone)
@@ -84,7 +80,6 @@ def get_surname(message, computers, name):
     )
     bot.register_next_step_handler(message, lambda msg: confirm_booking(msg, computers, name, surname))
 
-# Подтверждение бронирования
 @bot.message_handler(content_types=['contact'])
 def confirm_booking(message, computers=None, name=None, surname=None):
     if message.contact is None or not message.contact.phone_number:
@@ -95,14 +90,26 @@ def confirm_booking(message, computers=None, name=None, surname=None):
     for comp in computers:
         bookings[f"{comp:02}"] = {"name": name, "surname": surname, "phone": phone}
 
-    bot.send_message(message.chat.id, f"Компьютеры {', '.join(f'{x:02}' for x in computers)} успешно забронированы!")
+    bot.send_message(
+        message.chat.id,
+        f"Компьютеры {', '.join(f'{x:02}' for x in computers)} успешно забронированы!"
+    )
+
     bot.send_message(
         message.chat.id,
         f"Свободные компьютеры: {', '.join(f'{x:02}' for x in get_free_computers())}",
-        reply_markup=telebot.types.ReplyKeyboardRemove(),  # Убираем кнопки
+        reply_markup=telebot.types.ReplyKeyboardRemove()
     )
 
-# Админская панель
+    # Уведомление администратору о бронировании
+    admin_chat_id = os.getenv("ADMIN_CHAT_ID")  # Укажите ID администратора в переменной окружения
+    if admin_chat_id:
+        bot.send_message(
+            admin_chat_id,
+            f"Клиент забронировал компьютеры: {', '.join(f'{x:02}' for x in computers)}\n"
+            f"Имя: {name}\nФамилия: {surname}\nТелефон: {phone}"
+        )
+
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     bot.send_message(message.chat.id, "Введите пароль:")
@@ -161,5 +168,4 @@ def delete_booking(message):
         bot.send_message(message.chat.id, "Неверный номер компьютера.")
     show_admin_menu(message)
 
-# Запуск бота
 bot.polling(none_stop=True)
