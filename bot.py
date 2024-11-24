@@ -89,7 +89,8 @@ def get_time(message, computers, name, surname):
     phone = message.contact.phone_number
     bot.send_message(
         message.chat.id,
-        "Введите время бронирования в формате HH:MM (например, 14:30):"
+        "Введите время бронирования в формате HH:MM (например, 14:30):",
+        reply_markup=telebot.types.ReplyKeyboardRemove()
     )
     bot.register_next_step_handler(
         message,
@@ -149,11 +150,12 @@ def check_password(message):
 
 def show_admin_menu(message):
     markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add("Показать бронирования", "Удалить бронирование", "Удалить все бронирования")
+    markup.add("Показать бронирования", "Удалить бронирование", "Удалить все бронирования", "Выйти из админ-панели")
     bot.send_message(message.chat.id, "Выберите действие:", reply_markup=markup)
     bot.register_next_step_handler(message, handle_admin_action)
 
 def handle_admin_action(message):
+    global admin_logged_in
     if message.text == "Показать бронирования":
         if not bookings:
             bot.send_message(message.chat.id, "Нет активных бронирований.")
@@ -178,6 +180,9 @@ def handle_admin_action(message):
         bookings.clear()
         bot.send_message(message.chat.id, "Все бронирования удалены.")
         show_admin_menu(message)
+    elif message.text == "Выйти из админ-панели":
+        admin_logged_in = False
+        bot.send_message(message.chat.id, "Вы вышли из админской панели.", reply_markup=telebot.types.ReplyKeyboardRemove())
     else:
         bot.send_message(message.chat.id, "Неверная команда.")
         show_admin_menu(message)
