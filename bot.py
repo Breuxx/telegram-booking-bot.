@@ -26,6 +26,7 @@ def start(message):
         message.chat.id,
         "Добро пожаловать! Напишите /book, чтобы забронировать компьютеры."
     )
+    bot.send_sticker(message.chat.id, "CAACAgIAAxkBAAIDc2TNcz9UvF1vV5k9lGuXJ-BcWWj9AAIpAQACVp29CnKRFH4cG0itLwQ")
 
 @bot.message_handler(commands=['book'])
 def book_computers(message):
@@ -78,37 +79,59 @@ def get_surname(message, computers, name):
         "Нажмите кнопку ниже, чтобы отправить ваш номер телефона:",
         reply_markup=markup,
     )
-    bot.register_next_step_handler(message, lambda msg: confirm_booking(msg, computers, name, surname))
+    bot.register_next_step_handler(message, lambda msg: get_time(msg, computers, name, surname))
 
-@bot.message_handler(content_types=['contact'])
-def confirm_booking(message, computers=None, name=None, surname=None):
+def get_time(message, computers, name, surname):
     if message.contact is None or not message.contact.phone_number:
         bot.send_message(message.chat.id, "Ошибка получения номера телефона. Попробуйте снова.")
         return
 
     phone = message.contact.phone_number
-    for comp in computers:
-        bookings[f"{comp:02}"] = {"name": name, "surname": surname, "phone": phone}
-
     bot.send_message(
         message.chat.id,
-        f"Компьютеры {', '.join(f'{x:02}' for x in computers)} успешно забронированы!"
+        "Введите время бронирования в формате HH:MM (например, 14:30):"
+    )
+    bot.register_next_step_handler(
+        message,
+        lambda msg: confirm_booking(msg, computers, name, surname, phone)
     )
 
-    bot.send_message(
-        message.chat.id,
-        f"Свободные компьютеры: {', '.join(f'{x:02}' for x in get_free_computers())}",
-        reply_markup=telebot.types.ReplyKeyboardRemove()
-    )
+def confirm_booking(message, computers, name, surname, phone):
+    time = message.text
+    try:
+        # Проверяем формат времени
+        hours, minutes = map(int, time.split(':'))
+        if not (0 <= hours < 24 and 0 <= minutes < 60):
+            raise ValueError
 
-    # Уведомление администратору о бронировании
-    admin_chat_id = os.getenv("ADMIN_CHAT_ID")  # Укажите ID администратора в переменной окружения
-    if admin_chat_id:
+        for comp in computers:
+            bookings[f"{comp:02}"] = {
+                "name": name,
+                "surname": surname,
+                "phone": phone,
+                "time": time
+            }
+
         bot.send_message(
-            admin_chat_id,
-            f"Клиент забронировал компьютеры: {', '.join(f'{x:02}' for x in computers)}\n"
-            f"Имя: {name}\nФамилия: {surname}\nТелефон: {phone}"
+            message.chat.id,
+            f"Компьютеры {', '.join(f'{x:02}' for x in computers)} успешно забронированы на {time}!"
         )
+        bot.send_sticker(message.chat.id, "CAACAgIAAxkBAAIDdGTNc0QbD9_Fh_wdbWtRO02NiyksAAKwAQACVp29CoYzClxo62tLLwQ")
+
+        # Уведомление администратору о бронировании
+        admin_chat_id = os.getenv("ADMIN_CHAT_ID")  # Укажите ID администратора в переменной окружения
+        if admin_chat_id:
+            bot.send_message(
+                admin_chat_id,
+                f"Клиент забронировал компьютеры: {', '.join(f'{x:02}' for x in computers)}\n"
+                f"Имя: {name}\nФамилия: {surname}\nТелефон: {phone}\nВремя: {time}"
+            )
+    except ValueError:
+        bot.send_message(
+            message.chat.id,
+            "Неверный формат времени. Попробуйте снова."
+        )
+        get_time(message, computers, name, surname)
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
@@ -136,7 +159,7 @@ def handle_admin_action(message):
             bot.send_message(message.chat.id, "Нет активных бронирований.")
         else:
             booking_list = "\n".join(
-                [f"Компьютер {comp}: {data['name']} {data['surname']}, Телефон: {data['phone']}" for comp, data in bookings.items()]
+                [f"Компьютер {comp}: {data['name']} {data['surname']}, Телефон: {data['phone']}, Время: {data['time']}" for comp, data in bookings.items()]
             )
             bot.send_message(message.chat.id, f"Список бронирований:\n{booking_list}")
         show_admin_menu(message)
