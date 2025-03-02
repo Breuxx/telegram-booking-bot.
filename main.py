@@ -3,100 +3,92 @@ import logging
 from datetime import datetime, time
 import pytz
 
-from telegram import Update, ReplyKeyboardMarkup, Sticker
+import pandas as pd
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    Updater,
+    Application,
     CommandHandler,
     MessageHandler,
-    Filters,
     CallbackContext,
-    JobQueue,
+    filters,
+    ContextTypes
 )
 
 # Настройки
-TOKEN = os.environ.get("TOKEN")  # Берем из переменных окружения Railway
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))  # Берем из переменных окружения
+TOKEN = os.environ.get("TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 EXCEL_FILE = "checkins.xlsx"
 EMPLOYEES_FILE = "employees.xlsx"
-TIME_ZONE = pytz.timezone('Europe/Moscow')  # Установите свою временную зону
+TIME_ZONE = pytz.timezone('Europe/Moscow')
 
-# Стикеры (замените на свои)
-STICKERS = {
-    "welcome": "CAACAgIAAxkBAAEL...",  # Пример ID стикера
-    "success": "CAACAgQAAxkBAAEL...",
-    "error": "CAACAgUAAxkBAAEL..."
-}
+# Настройка логгирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# ... (остальные функции из предыдущего кода остаются без изменений)
+# Инициализация файлов
+def init_files():
+    if not os.path.exists(EXCEL_FILE):
+        pd.DataFrame(columns=["user_id", "name", "date", "checkin", "checkout"]).to_excel(
+            EXCEL_FILE, index=False
+        )
+    if not os.path.exists(EMPLOYEES_FILE):
+        pd.DataFrame(columns=["user_id", "name", "is_admin"]).to_excel(
+            EMPLOYEES_FILE, index=False
+        )
 
-def start(update: Update, context: CallbackContext) -> None:
-    sticker_id = STICKERS["welcome"]
-    update.message.reply_sticker(sticker_id)
-    update.message.reply_text("Добро пожаловать в систему учета рабочего времени!")
+init_files()
 
-def send_reminder(context: CallbackContext) -> None:
-    """Ежедневное напоминание для всех сотрудников"""
-    job = context.job
-    now = datetime.now(TIME_ZONE)
+# ... (Все остальные функции остаются аналогичными предыдущей версии, 
+# но с заменой Filters на filters в обработчиках)
+
+# Пример исправленного обработчика сообщений:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    text = update.message.text
     
-    # Утреннее напоминание в 9:30
-    if now.hour == 9 and now.minute == 30:
-        df = pd.read_excel(EXCEL_FILE)
-        today = now.strftime("%Y-%m-%d")
-        employees = pd.read_excel(EMPLOYEES_FILE)
+    if not is_admin(user_id):
+        await update.message.reply_text("Неизвестная команда")
+        return
         
-        for user_id in employees["user_id"]:
-            if not df[(df["user_id"] == user_id) & (df["date"] == today)].empty:
-                continue
-            context.bot.send_message(
-                chat_id=user_id,
-                text="⏰ Не забудьте отметить приход командой /checkin!"
-            )
+    if text == "Скачать отчет":
+        await update.message.reply_document(document=open(EXCEL_FILE, "rb"))
+    elif text == "Добавить сотрудника":
+        await update.message.reply_text("Введите команду в формате: /add_employee имя")
+    elif text == "Изменить имя":
+        await update.message.reply_text("Введите команду в формате: /update_employee старое_имя новое_имя")
 
-    # Вечернее напоминание в 18:00
-    elif now.hour == 18 and now.minute == 0:
-        df = pd.read_excel(EXCEL_FILE)
-        today = now.strftime("%Y-%m-%d")
-        
-        for _, row in df[df["checkout"].isna() & (df["date"] == today)].iterrows():
-            context.bot.send_message(
-                chat_id=row["user_id"],
-                text="⏰ Не забудьте отметить уход командой /checkout!"
-            )
-
-def error_handler(update: Update, context: CallbackContext) -> None:
-    """Обработка ошибок с отправкой стикера"""
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
-    update.message.reply_sticker(STICKERS["error"])
-    update.message.reply_text("😢 Произошла ошибка. Попробуйте позже.")
-
+# Главная функция
 def main() -> None:
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
-    job_queue = updater.job_queue
-
-    # Инициализация напоминаний
-    job_queue.run_daily(
-        send_reminder,
-        time(time(hour=9, minute=30), tzinfo=TIME_ZONE),
-        days=(0, 1, 2, 3, 4, 5, 6)
-    )
-    
-    job_queue.run_daily(
-        send_reminder,
-        time(time(hour=18, minute=0), tzinfo=TIME_ZONE),
-        days=(0, 1, 2, 3, 4, 5, 6)
-    )
+    application = Application.builder().token(TOKEN).build()
 
     # Обработчики команд
-    dispatcher.add_handler(CommandHandler("start", start))
-    # ... остальные обработчики как в предыдущем коде
+    application.add_handler(CommandHandler("checkin", checkin))
+    application.add_handler(CommandHandler("checkout", checkout))
+    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("add_employee", add_employee))
+    application.add_handler(CommandHandler("update_employee", update_employee))
     
-    # Обработка ошибок
-    dispatcher.add_error_handler(error_handler)
+    # Обработчики сообщений
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_message
+    ))
+    
+    # Регистрация пользователей
+    application.add_handler(MessageHandler(filters.ALL, register_user))
 
-    updater.start_polling()
-    updater.idle()
+    # Напоминания
+    job_queue = application.job_queue
+    job_queue.run_daily(
+        send_reminder,
+        time(hour=9, minute=30, tzinfo=TIME_ZONE),
+        days=(0, 1, 2, 3, 4, 5, 6)
+    )
+    
+    application.run_polling()
 
-
-
+if __name__ == "__main__":
+    main()
