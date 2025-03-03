@@ -83,7 +83,6 @@ async def set_schedule_handler(message: types.Message):
 
 @dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
 async def schedule_input(message: types.Message):
-    # Пример ввода: "14:00-22:00"
     try:
         parts = message.text.split('-')
         if len(parts) != 2:
@@ -104,13 +103,28 @@ async def daily_report(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
         await message.answer("Access denied")
         return
-    today = datetime.datetime.now(tz).strftime('%Y-%m-%d')
-    records = get_daily_report(today)
-    if not records:
+    # Текущая дата в часовом поясе Tashkent
+    today = datetime.datetime.now(tz).date()
+    # Получаем все записи и фильтруем их по Tashkent-дате
+    all_records = get_all_records()
+    daily_records = []
+    for rec in all_records:
+        # rec: (user_id, username, full_name, action, timestamp)
+        try:
+            utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            utc_time = datetime.datetime.fromisoformat(rec[4])
+        utc_time = utc_time.replace(tzinfo=pytz.utc)
+        tashkent_time = utc_time.astimezone(tz)
+        if tashkent_time.date() == today:
+            adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
+            daily_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
+    
+    if not daily_records:
         await message.answer("Нет записей за сегодня.")
     else:
-        report = f"Отчёт за {today}:\n\n"
-        for rec in records:
+        report = f"Отчёт за {today.strftime('%Y-%m-%d')}:\n\n"
+        for rec in daily_records:
             user_disp = rec[2]
             if rec[1]:
                 user_disp += f" (@{rec[1]})"
@@ -131,7 +145,6 @@ async def all_stats(message: types.Message):
     # Конвертируем время из UTC в Tashkent для каждого лога
     adjusted_records = []
     for rec in records:
-        # rec имеет вид: (user_id, username, full_name, action, timestamp)
         try:
             utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
         except Exception:
