@@ -1,30 +1,38 @@
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from db import init_db, log_action, get_user_stats, get_daily_report, get_all_records, set_schedule, get_all_schedules, get_schedule
-from dotenv import load_dotenv
-import os
 import datetime
 import csv
 import io
+import os
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
 
 # Для фонового планирования напоминаний
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from db import (
+    init_db, log_action, get_user_stats, get_daily_report, get_all_records,
+    set_schedule, get_all_schedules, get_schedule
+)
+
 # Загрузка переменных окружения
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# Инициализация бота
+# Инициализация бота и диспетчера
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
 # Получаем ID администратора и устанавливаем часовой пояс для Tashkent
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 tz = pytz.timezone('Asia/Tashkent')
+
+# Глобальный словарь для хранения ожидаемых действий пользователя (arrived/left)
+pending_actions = {}
 
 # Главное меню для пользователей
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -39,37 +47,49 @@ async def start(message: types.Message):
         reply_markup=main_menu
     )
 
+# Обработчик для запроса подтверждения прихода через локацию
 @dp.message_handler(lambda message: message.text == '✅ Я пришёл')
-async def arrived(message: types.Message):
-    now = datetime.datetime.now(tz)
-    full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
-    try:
-        log_action(message.from_user.id, message.from_user.username, full_name, 'arrived')
-    except Exception as e:
-        logging.error(f"Error logging arrival: {e}")
-    await message.answer('✅ Ваш приход отмечен!\n\nХорошего рабочего дня!')
-    
-    admin_message = f"📌 **Приход**:\nПользователь: {full_name}"
-    if message.from_user.username:
-        admin_message += f" (@{message.from_user.username})"
-    admin_message += f"\nID: {message.from_user.id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown')
+async def ask_location_arrived(message: types.Message):
+    pending_actions[message.from_user.id] = 'arrived'
+    location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
+    await message.answer("Пожалуйста, поделитесь вашей локацией для подтверждения прихода.", reply_markup=location_keyboard)
 
+# Обработчик для запроса подтверждения ухода через локацию
 @dp.message_handler(lambda message: message.text == '🏁 Я ушёл')
-async def left(message: types.Message):
+async def ask_location_left(message: types.Message):
+    pending_actions[message.from_user.id] = 'left'
+    location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
+    await message.answer("Пожалуйста, поделитесь вашей локацией для подтверждения ухода.", reply_markup=location_keyboard)
+
+# Обработчик входящих сообщений с локацией (без проверки – просто пересылает администратору)
+@dp.message_handler(content_types=types.ContentType.LOCATION)
+async def location_handler(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in pending_actions:
+        return  # Если нет ожидаемого действия, просто игнорируем
+    action = pending_actions.pop(user_id)
     now = datetime.datetime.now(tz)
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     try:
-        log_action(message.from_user.id, message.from_user.username, full_name, 'left')
+        log_action(user_id, message.from_user.username, full_name, action)
     except Exception as e:
-        logging.error(f"Error logging departure: {e}")
-    await message.answer('🏁 Ваш уход отмечен!\n\nХорошего отдыха!')
-    
-    admin_message = f"📌 **Уход**:\nПользователь: {full_name}"
+        logging.error(f"Error logging {action}: {e}")
+    if action == 'arrived':
+        await message.answer('✅ Ваш приход подтвержден!\n\nСпасибо, что отправили локацию!')
+        admin_message = f"📌 **Приход**:\nПользователь: {full_name}"
+    elif action == 'left':
+        await message.answer('🏁 Ваш уход подтвержден!\n\nСпасибо, что отправили локацию!')
+        admin_message = f"📌 **Уход**:\nПользователь: {full_name}"
+    else:
+        return
     if message.from_user.username:
         admin_message += f" (@{message.from_user.username})"
-    admin_message += f"\nID: {message.from_user.id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    admin_message += f"\nID: {user_id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
     await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown')
+    # Пересылаем администратору локацию пользователя
+    await bot.send_location(ADMIN_CHAT_ID, latitude=message.location.latitude, longitude=message.location.longitude)
 
 @dp.message_handler(lambda message: message.text == '📊 Моя статистика')
 async def stats(message: types.Message):
@@ -105,7 +125,6 @@ async def schedule_input(message: types.Message):
             raise ValueError("Неверный формат")
         start_str = parts[0].strip()
         end_str = parts[1].strip()
-        # Проверка формата времени
         datetime.datetime.strptime(start_str, '%H:%M')
         datetime.datetime.strptime(end_str, '%H:%M')
         set_schedule(message.from_user.id, start_str, end_str)
