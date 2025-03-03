@@ -25,7 +25,7 @@ dp = Dispatcher(bot)
 # Получаем ID администратора
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 
-# Устанавливаем часовой пояс для Ташкента
+# Устанавливаем часовой пояс для Tashkent
 tz = pytz.timezone('Asia/Tashkent')
 
 # Главное меню для пользователей
@@ -127,18 +127,31 @@ async def all_stats(message: types.Message):
     if not records:
         await message.answer("Нет записей.")
         return
-    
-    # Формируем CSV
+
+    # Конвертируем время из UTC в Tashkent для каждого лога
+    adjusted_records = []
+    for rec in records:
+        # rec имеет вид: (user_id, username, full_name, action, timestamp)
+        try:
+            utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            utc_time = datetime.datetime.fromisoformat(rec[4])
+        utc_time = utc_time.replace(tzinfo=pytz.utc)
+        tashkent_time = utc_time.astimezone(tz)
+        new_rec = (rec[0], rec[1], rec[2], rec[3], tashkent_time.strftime('%Y-%m-%d %H:%M:%S'))
+        adjusted_records.append(new_rec)
+
+    # Формирование CSV-файла
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["user_id", "username", "full_name", "action", "timestamp"])
-    for rec in records:
+    for rec in adjusted_records:
         writer.writerow(rec)
     output.seek(0)
-    
-    # Генерируем график посещаемости (считаем количество 'приход' и 'уход' по датам)
+
+    # Генерация графика посещаемости (подсчёт количества 'приход' и 'уход' по датам)
     dates = {}
-    for rec in records:
+    for rec in adjusted_records:
         date_only = rec[4].split()[0]
         if date_only not in dates:
             dates[date_only] = {"arrived": 0, "left": 0}
@@ -149,7 +162,7 @@ async def all_stats(message: types.Message):
     sorted_dates = sorted(dates.keys())
     arrived_counts = [dates[d]["arrived"] for d in sorted_dates]
     left_counts = [dates[d]["left"] for d in sorted_dates]
-    
+
     plt.figure(figsize=(10, 5))
     plt.plot(sorted_dates, arrived_counts, marker='o', label='Приход')
     plt.plot(sorted_dates, left_counts, marker='o', label='Уход')
@@ -159,13 +172,13 @@ async def all_stats(message: types.Message):
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
-    
+
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png')
     plt.close()
     img_buffer.seek(0)
-    
-    # Отправляем CSV и график
+
+    # Отправка CSV и графика администратору
     await bot.send_document(
         ADMIN_CHAT_ID,
         types.InputFile(io.BytesIO(output.getvalue().encode('utf-8')), filename="allstats.csv")
