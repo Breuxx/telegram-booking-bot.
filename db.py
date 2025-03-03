@@ -30,3 +30,19 @@ def get_user_stats(user_id):
     total = cursor.fetchone()[0]
     conn.close()
     return total
+
+def get_daily_report(date_str):
+    conn = sqlite3.connect('attendance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, action, timestamp FROM attendance WHERE date(timestamp) = ?", (date_str,))
+    records = cursor.fetchall()
+    conn.close()
+    return records
+
+def get_all_records():
+    conn = sqlite3.connect('attendance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, action, timestamp FROM attendance")
+    records = cursor.fetchall()
+    conn.close()
+    return records
