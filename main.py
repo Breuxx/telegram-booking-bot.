@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
-# Получаем ID администратора и устанавливаем часовой пояс для Tashkent
+# Получаем ID администратора и устанавливаем часовой пояс для Tashкентa
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 tz = pytz.timezone('Asia/Tashkent')
 
@@ -405,6 +405,12 @@ async def process_edit_schedules(callback_query: types.CallbackQuery):
     await bot.send_message(ADMIN_CHAT_ID, "Чтобы редактировать расписания, используйте команду /edit_schedule")
     await bot.answer_callback_query(callback_query.id)
 
+# === Функция обновления описания бота (текущее время в Ташкенте) ===
+async def update_bot_description():
+    current_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    description = f"Текущее время в Ташкенте: {current_time}"
+    await bot.set_my_description(description=description)
+
 # === Напоминания по расписанию ===
 async def check_shift_reminders():
     schedules = get_all_schedules()
@@ -426,8 +432,10 @@ async def check_shift_reminders():
         if reminder_end <= now < reminder_end + datetime.timedelta(minutes=1):
             await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
 
+# Инициализируем планировщик APScheduler
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
+scheduler.add_job(update_bot_description, 'interval', minutes=1)
 scheduler.start()
 
 if __name__ == '__main__':
