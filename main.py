@@ -8,7 +8,7 @@ import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
@@ -368,6 +368,44 @@ async def send_summary(message: types.Message):
         return
     await message.answer("Функция отправки отчётов на email ещё не реализована.")
 
+# === Админ-панель ===
+@dp.message_handler(commands=['admin_panel'])
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID:
+        await message.answer("Access denied")
+        return
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("Детализированный отчёт", callback_data="detailed_report"),
+        InlineKeyboardButton("Управление правами", callback_data="manage_access"),
+        InlineKeyboardButton("Редактировать расписания", callback_data="edit_schedules")
+    )
+    await message.answer("Выберите опцию админ-панели:", reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data == "detailed_report")
+async def process_detailed_report(callback_query: types.CallbackQuery):
+    records = get_all_records()
+    if not records:
+        detailed_text = "Нет записей."
+    else:
+        detailed_text = "Детализированный отчёт:\n\n"
+        for rec in records:
+            detailed_text += f"ID: {rec[0]}, Пользователь: {rec[2]}, Действие: {rec[3]}, Время: {rec[4]}\n"
+    await bot.send_message(ADMIN_CHAT_ID, detailed_text)
+    await bot.answer_callback_query(callback_query.id)
+
+@dp.callback_query_handler(lambda c: c.data == "manage_access")
+async def process_manage_access(callback_query: types.CallbackQuery):
+    # Заглушка для управления правами доступа
+    await bot.send_message(ADMIN_CHAT_ID, "Функция управления правами доступа пока не реализована.")
+    await bot.answer_callback_query(callback_query.id)
+
+@dp.callback_query_handler(lambda c: c.data == "edit_schedules")
+async def process_edit_schedules(callback_query: types.CallbackQuery):
+    await bot.send_message(ADMIN_CHAT_ID, "Чтобы редактировать расписания, используйте команду /edit_schedule")
+    await bot.answer_callback_query(callback_query.id)
+
+# === Напоминания по расписанию ===
 async def check_shift_reminders():
     schedules = get_all_schedules()
     now = datetime.datetime.now(tz)
