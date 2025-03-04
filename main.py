@@ -5,10 +5,14 @@ import datetime
 import csv
 import io
 import os
+import asyncio
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
@@ -29,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
-# Получаем ID администратора и устанавливаем часовой пояс для Tashкентa
+# Получаем ID администратора и устанавливаем часовой пояс для Ташкента
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 tz = pytz.timezone('Asia/Tashkent')
 
@@ -68,8 +72,16 @@ async def start(message: types.Message):
         reply_markup=main_menu
     )
 
-# === Новый функционал: установка точки проверки администратором ===
+# === Обновление описания бота (с текущим временем в Ташкенте) ===
+async def update_bot_description():
+    try:
+        current_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+        description = f"Текущее время в Ташкенте: {current_time}"
+        await bot.set_my_description(description=description)
+    except Exception as e:
+        logging.error(f"Error updating bot description: {e}")
 
+# === Новый функционал: установка точки проверки администратором ===
 @dp.message_handler(commands=['set_allowed_location'])
 async def set_allowed_location_command(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -82,7 +94,8 @@ async def set_allowed_location_command(message: types.Message):
     await message.answer("Отправьте, пожалуйста, локацию, которая станет новой точкой проверки (ALLOWED_LAT, ALLOWED_LON).",
                          reply_markup=location_keyboard)
 
-@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location, content_types=types.ContentType.LOCATION)
+@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location,
+                    content_types=types.ContentType.LOCATION)
 async def admin_location_handler(message: types.Message):
     global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
     ALLOWED_LAT = message.location.latitude
@@ -91,7 +104,8 @@ async def admin_location_handler(message: types.Message):
     await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}",
                          reply_markup=ReplyKeyboardRemove())
 
-@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location and ("maps.apple.com" in message.text or "goo.gl/maps" in message.text))
+@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location and 
+                    ("maps.apple.com" in message.text or "goo.gl/maps" in message.text))
 async def admin_maps_link_handler(message: types.Message):
     global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
     coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
@@ -121,14 +135,17 @@ async def ask_location_left(message: types.Message):
     await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения ухода.",
                          reply_markup=location_keyboard)
 
-def process_location(user_id: int, lat: float, lon: float, full_name: str, username: str, action: str):
-    """Проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие, если расстояние допустимо."""
+async def process_location_async(user_id: int, lat: float, lon: float,
+                                 full_name: str, username: str, action: str):
+    """Асинхронно проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие.
+       Для log_action используется run_in_executor, чтобы не блокировать event loop."""
     distance = calculate_distance(lat, lon, ALLOWED_LAT, ALLOWED_LON)
     if distance > ALLOWED_RADIUS:
         return (False, f"Ваше местоположение находится слишком далеко от разрешенной зоны (расстояние: {distance:.1f} м). Попробуйте отправить корректную локацию.")
     now = datetime.datetime.now(tz)
+    loop = asyncio.get_running_loop()
     try:
-        log_action(user_id, username, full_name, action)
+        await loop.run_in_executor(None, log_action, user_id, username, full_name, action)
     except Exception as e:
         logging.error(f"Error logging {action}: {e}")
     if action == 'arrived':
@@ -140,19 +157,19 @@ def process_location(user_id: int, lat: float, lon: float, full_name: str, usern
     if username:
         admin_message += f" (@{username})"
     admin_message += f"\nID: {user_id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    bot.loop.create_task(bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown'))
-    bot.loop.create_task(bot.send_location(ADMIN_CHAT_ID, latitude=lat, longitude=lon))
+    asyncio.create_task(bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown'))
+    asyncio.create_task(bot.send_location(ADMIN_CHAT_ID, latitude=lat, longitude=lon))
     return (True, response + f"\nРасстояние до точки проверки: {distance:.1f} м.")
 
 @dp.message_handler(content_types=types.ContentType.LOCATION)
 async def location_handler(message: types.Message):
     user_id = message.from_user.id
     if user_id not in pending_actions:
-        return
+        return  # Если нет ожидаемого действия – не обрабатываем
     action = pending_actions.pop(user_id)
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
-    valid, resp = process_location(user_id, message.location.latitude, message.location.longitude,
-                                   full_name, message.from_user.username, action)
+    valid, resp = await process_location_async(user_id, message.location.latitude, message.location.longitude,
+                                                 full_name, message.from_user.username, action)
     await message.answer(resp, reply_markup=ReplyKeyboardRemove())
 
 @dp.message_handler(lambda message: ("google.com/maps" in message.text or "goo.gl/maps" in message.text))
@@ -168,7 +185,7 @@ async def google_maps_handler(message: types.Message):
         return
     lat, lon = map(float, coords[0])
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
-    valid, resp = process_location(user_id, lat, lon, full_name, message.from_user.username, action)
+    valid, resp = await process_location_async(user_id, lat, lon, full_name, message.from_user.username, action)
     await message.answer(resp, reply_markup=ReplyKeyboardRemove())
 
 @dp.message_handler(lambda message: message.text == '📊 Моя статистика')
@@ -396,7 +413,6 @@ async def process_detailed_report(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "manage_access")
 async def process_manage_access(callback_query: types.CallbackQuery):
-    # Заглушка для управления правами доступа
     await bot.send_message(ADMIN_CHAT_ID, "Функция управления правами доступа пока не реализована.")
     await bot.answer_callback_query(callback_query.id)
 
@@ -404,12 +420,6 @@ async def process_manage_access(callback_query: types.CallbackQuery):
 async def process_edit_schedules(callback_query: types.CallbackQuery):
     await bot.send_message(ADMIN_CHAT_ID, "Чтобы редактировать расписания, используйте команду /edit_schedule")
     await bot.answer_callback_query(callback_query.id)
-
-# === Функция обновления описания бота (текущее время в Ташкенте) ===
-async def update_bot_description():
-    current_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-    description = f"Текущее время в Ташкенте: {current_time}"
-    await bot.set_my_description(description=description)
 
 # === Напоминания по расписанию ===
 async def check_shift_reminders():
