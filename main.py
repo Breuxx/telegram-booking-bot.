@@ -177,6 +177,46 @@ async def google_maps_handler(message: types.Message):
     valid, resp = await process_location_async(user_id, lat, lon, full_name, message.from_user.username, action)
     await message.answer(resp, reply_markup=ReplyKeyboardRemove())
 
+# === Новая команда: /search ===
+@dp.message_handler(commands=['search'])
+async def search_command(message: types.Message):
+    # Доступна только администратору
+    if message.from_user.id != ADMIN_CHAT_ID:
+        await message.answer("Access denied")
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Используйте: /search <user_id>")
+        return
+    try:
+        search_id = int(parts[1])
+    except ValueError:
+        await message.answer("Некорректный user_id. Он должен быть числом.")
+        return
+    records = get_all_records()
+    filtered_records = []
+    for rec in records:
+        # rec: (user_id, username, full_name, action, timestamp)
+        if rec[0] == search_id:
+            try:
+                utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                utc_time = datetime.datetime.fromisoformat(rec[4])
+            utc_time = utc_time.replace(tzinfo=pytz.utc)
+            tashkent_time = utc_time.astimezone(tz)
+            adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
+            filtered_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
+    if not filtered_records:
+        await message.answer("Нет записей для данного пользователя.")
+    else:
+        result_text = f"Записи для пользователя {search_id}:\n\n"
+        for rec in filtered_records:
+            user_disp = rec[2]
+            if rec[1]:
+                user_disp += f" (@{rec[1]})"
+            result_text += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
+        await message.answer(result_text)
+
 @dp.message_handler(lambda message: message.text == '📊 Моя статистика')
 async def stats(message: types.Message):
     try:
