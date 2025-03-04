@@ -8,7 +8,7 @@ import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
@@ -44,13 +44,13 @@ pending_allowed_location = False
 # Глобальный словарь для хранения ожидаемых действий пользователя (приход/уход)
 pending_actions = {}
 
-def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     """Вычисляет расстояние между двумя координатами (в метрах) по формуле гаверсина."""
     R = 6371000  # Радиус Земли в метрах
-    phi1 = math.radians(lat1)
+    phi1 = math.radians(lat)
     phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
+    delta_phi = math.radians(lat2 - lat)
+    delta_lambda = math.radians(lon2 - lon)
     a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
@@ -79,7 +79,8 @@ async def set_allowed_location_command(message: types.Message):
     pending_allowed_location = True
     location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Отправьте, пожалуйста, локацию, которая станет новой точкой проверки (ALLOWED_LAT, ALLOWED_LON).", reply_markup=location_keyboard)
+    await message.answer("Отправьте, пожалуйста, локацию, которая станет новой точкой проверки (ALLOWED_LAT, ALLOWED_LON).",
+                         reply_markup=location_keyboard)
 
 @dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location, content_types=types.ContentType.LOCATION)
 async def admin_location_handler(message: types.Message):
@@ -87,9 +88,9 @@ async def admin_location_handler(message: types.Message):
     ALLOWED_LAT = message.location.latitude
     ALLOWED_LON = message.location.longitude
     pending_allowed_location = False
-    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}")
+    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}",
+                         reply_markup=ReplyKeyboardRemove())
 
-# Если админ отправляет ссылку Google Maps для установки точки проверки
 @dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location and ("maps.apple.com" in message.text or "goo.gl/maps" in message.text))
 async def admin_maps_link_handler(message: types.Message):
     global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
@@ -99,24 +100,26 @@ async def admin_maps_link_handler(message: types.Message):
         return
     ALLOWED_LAT, ALLOWED_LON = map(float, coords[0])
     pending_allowed_location = False
-    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}")
+    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}",
+                         reply_markup=ReplyKeyboardRemove())
 
 # === Обработка пользовательских действий (приход/уход) с проверкой локации ===
 
-# Запрос локации при нажатии кнопок "приход" и "уход"
 @dp.message_handler(lambda message: message.text == '✅ Я пришёл')
 async def ask_location_arrived(message: types.Message):
     pending_actions[message.from_user.id] = 'arrived'
     location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения прихода.", reply_markup=location_keyboard)
+    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения прихода.",
+                         reply_markup=location_keyboard)
 
 @dp.message_handler(lambda message: message.text == '🏁 Я ушёл')
 async def ask_location_left(message: types.Message):
     pending_actions[message.from_user.id] = 'left'
     location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения ухода.", reply_markup=location_keyboard)
+    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения ухода.",
+                         reply_markup=location_keyboard)
 
 def process_location(user_id: int, lat: float, lon: float, full_name: str, username: str, action: str):
     """Проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие, если расстояние допустимо."""
@@ -137,24 +140,21 @@ def process_location(user_id: int, lat: float, lon: float, full_name: str, usern
     if username:
         admin_message += f" (@{username})"
     admin_message += f"\nID: {user_id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    # Отправляем уведомление админу с данными и локацией
     bot.loop.create_task(bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown'))
     bot.loop.create_task(bot.send_location(ADMIN_CHAT_ID, latitude=lat, longitude=lon))
     return (True, response + f"\nРасстояние до точки проверки: {distance:.1f} м.")
 
-# Обработчик для стандартных сообщений с локацией (content_type=LOCATION)
 @dp.message_handler(content_types=types.ContentType.LOCATION)
 async def location_handler(message: types.Message):
     user_id = message.from_user.id
     if user_id not in pending_actions:
-        return  # Если нет ожидаемого действия (приход/уход) – не обрабатываем
+        return
     action = pending_actions.pop(user_id)
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     valid, resp = process_location(user_id, message.location.latitude, message.location.longitude,
                                    full_name, message.from_user.username, action)
-    await message.answer(resp)
+    await message.answer(resp, reply_markup=ReplyKeyboardRemove())
 
-# Обработчик для сообщений с ссылками Google Maps (извлечение координат)
 @dp.message_handler(lambda message: ("google.com/maps" in message.text or "goo.gl/maps" in message.text))
 async def google_maps_handler(message: types.Message):
     user_id = message.from_user.id
@@ -163,14 +163,13 @@ async def google_maps_handler(message: types.Message):
     action = pending_actions.pop(user_id)
     coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
     if not coords:
-        await message.answer("Не удалось определить координаты из ссылки. Попробуйте отправить локацию через кнопку.")
+        await message.answer("Не удалось определить координаты из ссылки. Попробуйте отправить локацию через кнопку.",
+                             reply_markup=ReplyKeyboardRemove())
         return
     lat, lon = map(float, coords[0])
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     valid, resp = process_location(user_id, lat, lon, full_name, message.from_user.username, action)
-    await message.answer(resp)
-
-# === Остальные команды (статистика, отчёты, графики, установка расписания) остаются без изменений ===
+    await message.answer(resp, reply_markup=ReplyKeyboardRemove())
 
 @dp.message_handler(lambda message: message.text == '📊 Моя статистика')
 async def stats(message: types.Message):
