@@ -72,15 +72,6 @@ async def start(message: types.Message):
         reply_markup=main_menu
     )
 
-# === Обновление описания бота (с текущим временем в Ташкенте) ===
-async def update_bot_description():
-    try:
-        current_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-        description = f"Текущее время в Ташкенте: {current_time}"
-        await bot.set_my_description(description=description)
-    except Exception as e:
-        logging.error(f"Error updating bot description: {e}")
-
 # === Новый функционал: установка точки проверки администратором ===
 @dp.message_handler(commands=['set_allowed_location'])
 async def set_allowed_location_command(message: types.Message):
@@ -118,7 +109,6 @@ async def admin_maps_link_handler(message: types.Message):
                          reply_markup=ReplyKeyboardRemove())
 
 # === Обработка пользовательских действий (приход/уход) с проверкой локации ===
-
 @dp.message_handler(lambda message: message.text == '✅ Я пришёл')
 async def ask_location_arrived(message: types.Message):
     pending_actions[message.from_user.id] = 'arrived'
@@ -137,8 +127,7 @@ async def ask_location_left(message: types.Message):
 
 async def process_location_async(user_id: int, lat: float, lon: float,
                                  full_name: str, username: str, action: str):
-    """Асинхронно проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие.
-       Для log_action используется run_in_executor, чтобы не блокировать event loop."""
+    """Асинхронно проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие."""
     distance = calculate_distance(lat, lon, ALLOWED_LAT, ALLOWED_LON)
     if distance > ALLOWED_RADIUS:
         return (False, f"Ваше местоположение находится слишком далеко от разрешенной зоны (расстояние: {distance:.1f} м). Попробуйте отправить корректную локацию.")
@@ -442,10 +431,8 @@ async def check_shift_reminders():
         if reminder_end <= now < reminder_end + datetime.timedelta(minutes=1):
             await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
 
-# Инициализируем планировщик APScheduler
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
-scheduler.add_job(update_bot_description, 'interval', minutes=1)
 scheduler.start()
 
 if __name__ == '__main__':
