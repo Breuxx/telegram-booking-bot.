@@ -33,15 +33,18 @@ dp = Dispatcher(bot)
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 tz = pytz.timezone('Asia/Tashkent')
 
-# Параметры разрешенной зоны (например, центр Ташкента) и радиус проверки (1000 м)
-ALLOWED_LAT = 41.2995      # Широта центра
-ALLOWED_LON = 69.2401      # Долгота центра
-ALLOWED_RADIUS = 1000      # Радиус в метрах
+# Разрешённая точка (по умолчанию)
+ALLOWED_LAT = 41.2995      # начальная широта (центр Ташкента)
+ALLOWED_LON = 69.2401      # начальная долгота
+ALLOWED_RADIUS = 1000      # радиус проверки в метрах
 
-# Глобальный словарь для хранения ожидаемых действий пользователя (arrived/left)
+# Флаг для ожидания установки новой точки проверки от админа
+pending_allowed_location = False
+
+# Глобальный словарь для хранения ожидаемых действий пользователя (приход/уход)
 pending_actions = {}
 
-def calculate_distance(lat1, lon1, lat2, lon2):
+def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Вычисляет расстояние между двумя координатами (в метрах) по формуле гаверсина."""
     R = 6371000  # Радиус Земли в метрах
     phi1 = math.radians(lat1)
@@ -65,6 +68,41 @@ async def start(message: types.Message):
         reply_markup=main_menu
     )
 
+# === Новый функционал: установка точки проверки администратором ===
+
+@dp.message_handler(commands=['set_allowed_location'])
+async def set_allowed_location_command(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID:
+        await message.answer("Access denied")
+        return
+    global pending_allowed_location
+    pending_allowed_location = True
+    location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
+    await message.answer("Отправьте, пожалуйста, локацию, которая станет новой точкой проверки (ALLOWED_LAT, ALLOWED_LON).", reply_markup=location_keyboard)
+
+@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location, content_types=types.ContentType.LOCATION)
+async def admin_location_handler(message: types.Message):
+    global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
+    ALLOWED_LAT = message.location.latitude
+    ALLOWED_LON = message.location.longitude
+    pending_allowed_location = False
+    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}")
+
+# Если админ отправляет ссылку Google Maps для установки точки проверки
+@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location and ("maps.apple.com" in message.text or "goo.gl/maps" in message.text))
+async def admin_maps_link_handler(message: types.Message):
+    global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
+    coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
+    if not coords:
+        await message.answer("Не удалось извлечь координаты из ссылки. Попробуйте отправить локацию через кнопку.")
+        return
+    ALLOWED_LAT, ALLOWED_LON = map(float, coords[0])
+    pending_allowed_location = False
+    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}")
+
+# === Обработка пользовательских действий (приход/уход) с проверкой локации ===
+
 # Запрос локации при нажатии кнопок "приход" и "уход"
 @dp.message_handler(lambda message: message.text == '✅ Я пришёл')
 async def ask_location_arrived(message: types.Message):
@@ -81,7 +119,7 @@ async def ask_location_left(message: types.Message):
     await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения ухода.", reply_markup=location_keyboard)
 
 def process_location(user_id: int, lat: float, lon: float, full_name: str, username: str, action: str):
-    """Проверяет расстояние и, если оно в пределах допустимого радиуса, фиксирует действие."""
+    """Проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие, если расстояние допустимо."""
     distance = calculate_distance(lat, lon, ALLOWED_LAT, ALLOWED_LON)
     if distance > ALLOWED_RADIUS:
         return (False, f"Ваше местоположение находится слишком далеко от разрешенной зоны (расстояние: {distance:.1f} м). Попробуйте отправить корректную локацию.")
@@ -102,28 +140,27 @@ def process_location(user_id: int, lat: float, lon: float, full_name: str, usern
     # Отправляем уведомление админу с данными и локацией
     bot.loop.create_task(bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown'))
     bot.loop.create_task(bot.send_location(ADMIN_CHAT_ID, latitude=lat, longitude=lon))
-    return (True, response + "\nЛокация соответствует установленному радиусу.")
+    return (True, response + f"\nРасстояние до точки проверки: {distance:.1f} м.")
 
 # Обработчик для стандартных сообщений с локацией (content_type=LOCATION)
 @dp.message_handler(content_types=types.ContentType.LOCATION)
 async def location_handler(message: types.Message):
     user_id = message.from_user.id
     if user_id not in pending_actions:
-        return
+        return  # Если нет ожидаемого действия (приход/уход) – не обрабатываем
     action = pending_actions.pop(user_id)
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     valid, resp = process_location(user_id, message.location.latitude, message.location.longitude,
                                    full_name, message.from_user.username, action)
     await message.answer(resp)
 
-# Обработчик для сообщений с ссылками Google Maps
+# Обработчик для сообщений с ссылками Google Maps (извлечение координат)
 @dp.message_handler(lambda message: ("google.com/maps" in message.text or "goo.gl/maps" in message.text))
 async def google_maps_handler(message: types.Message):
     user_id = message.from_user.id
     if user_id not in pending_actions:
         return
     action = pending_actions.pop(user_id)
-    # Попытка извлечь координаты из ссылки
     coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
     if not coords:
         await message.answer("Не удалось определить координаты из ссылки. Попробуйте отправить локацию через кнопку.")
@@ -132,6 +169,8 @@ async def google_maps_handler(message: types.Message):
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     valid, resp = process_location(user_id, lat, lon, full_name, message.from_user.username, action)
     await message.answer(resp)
+
+# === Остальные команды (статистика, отчёты, графики, установка расписания) остаются без изменений ===
 
 @dp.message_handler(lambda message: message.text == '📊 Моя статистика')
 async def stats(message: types.Message):
@@ -142,12 +181,10 @@ async def stats(message: types.Message):
         total = 0
     await message.answer(f"📊 Ваша активность:\n\n📅 Всего отметок: {total}")
 
-# Обработчик для установки графика работы
 @dp.message_handler(lambda message: message.text == '🕒 Установить график')
 async def set_schedule_handler(message: types.Message):
     await message.answer("Введите ваш график в формате HH:MM-HH:MM (например, 14:00-22:00)")
 
-# Команда для редактирования графика (интерактивное управление расписанием)
 @dp.message_handler(commands=['edit_schedule'])
 async def edit_schedule(message: types.Message):
     current = get_schedule(message.from_user.id)
@@ -158,7 +195,6 @@ async def edit_schedule(message: types.Message):
     msg += "Введите новый график в формате HH:MM-HH:MM (например, 09:00-17:00)"
     await message.answer(msg)
 
-# Обработчик ввода графика (для установки или редактирования)
 @dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
 async def schedule_input(message: types.Message):
     try:
@@ -175,7 +211,6 @@ async def schedule_input(message: types.Message):
         logging.error(f"Error setting schedule: {e}")
         await message.answer("Ошибка! Введите время в формате HH:MM-HH:MM (например, 14:00-22:00)")
 
-# Команда для ежедневного отчёта (только для администратора)
 @dp.message_handler(commands=['daily_report'])
 async def daily_report(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -205,7 +240,6 @@ async def daily_report(message: types.Message):
             report += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(report)
 
-# Команда для недельного отчёта (только для администратора)
 @dp.message_handler(commands=['weekly_report'])
 async def weekly_report(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -236,7 +270,6 @@ async def weekly_report(message: types.Message):
             report += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(report)
 
-# Команда для месячного отчёта (только для администратора)
 @dp.message_handler(commands=['monthly_report'])
 async def monthly_report(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -267,7 +300,6 @@ async def monthly_report(message: types.Message):
             report += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(report)
 
-# Команда для экспорта всех записей в CSV и отправки графика (только для администратора)
 @dp.message_handler(commands=['allstats'])
 async def all_stats(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -278,7 +310,6 @@ async def all_stats(message: types.Message):
         await message.answer("Нет записей.")
         return
 
-    # Конвертация времени из UTC в Tashkent
     adjusted_records = []
     for rec in records:
         try:
@@ -290,7 +321,6 @@ async def all_stats(message: types.Message):
         new_rec = (rec[0], rec[1], rec[2], rec[3], tashkent_time.strftime('%Y-%m-%d %H:%M:%S'))
         adjusted_records.append(new_rec)
 
-    # Формирование CSV
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["user_id", "username", "full_name", "action", "timestamp"])
@@ -298,7 +328,6 @@ async def all_stats(message: types.Message):
         writer.writerow(rec)
     output.seek(0)
 
-    # Генерация графика посещаемости
     dates = {}
     for rec in adjusted_records:
         date_only = rec[4].split()[0]
@@ -333,7 +362,6 @@ async def all_stats(message: types.Message):
     )
     await bot.send_photo(ADMIN_CHAT_ID, photo=types.InputFile(img_buffer, filename="stats.png"))
 
-# Команда-заглушка для интеграции с внешними сервисами (например, отправка отчётов на email)
 @dp.message_handler(commands=['send_summary'])
 async def send_summary(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -341,7 +369,6 @@ async def send_summary(message: types.Message):
         return
     await message.answer("Функция отправки отчётов на email ещё не реализована.")
 
-# Функция, которая проверяет графики и отправляет напоминания сотрудникам
 async def check_shift_reminders():
     schedules = get_all_schedules()
     now = datetime.datetime.now(tz)
@@ -355,7 +382,6 @@ async def check_shift_reminders():
             continue
         start_dt = now.replace(hour=start_dt.hour, minute=start_dt.minute, second=0, microsecond=0)
         end_dt = now.replace(hour=end_dt.hour, minute=end_dt.minute, second=0, microsecond=0)
-        # Напоминание: за 15 минут до начала смены и за 10 минут до окончания смены
         reminder_start = start_dt - datetime.timedelta(minutes=15)
         reminder_end = end_dt - datetime.timedelta(minutes=10)
         if reminder_start <= now < reminder_start + datetime.timedelta(minutes=1):
@@ -363,7 +389,6 @@ async def check_shift_reminders():
         if reminder_end <= now < reminder_end + datetime.timedelta(minutes=1):
             await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
 
-# Инициализируем планировщик APScheduler
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
 scheduler.start()
