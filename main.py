@@ -1,4 +1,6 @@
 import logging
+import math
+import re
 import datetime
 import csv
 import io
@@ -31,8 +33,24 @@ dp = Dispatcher(bot)
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 tz = pytz.timezone('Asia/Tashkent')
 
+# Параметры разрешенной зоны (например, центр Ташкента) и радиус проверки (1000 м)
+ALLOWED_LAT = 41.2995      # Широта центра
+ALLOWED_LON = 69.2401      # Долгота центра
+ALLOWED_RADIUS = 1000      # Радиус в метрах
+
 # Глобальный словарь для хранения ожидаемых действий пользователя (arrived/left)
 pending_actions = {}
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """Вычисляет расстояние между двумя координатами (в метрах) по формуле гаверсина."""
+    R = 6371000  # Радиус Земли в метрах
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 # Главное меню для пользователей
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -47,49 +65,73 @@ async def start(message: types.Message):
         reply_markup=main_menu
     )
 
-# Обработчик для запроса подтверждения прихода через локацию
+# Запрос локации при нажатии кнопок "приход" и "уход"
 @dp.message_handler(lambda message: message.text == '✅ Я пришёл')
 async def ask_location_arrived(message: types.Message):
     pending_actions[message.from_user.id] = 'arrived'
     location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Пожалуйста, поделитесь вашей локацией для подтверждения прихода.", reply_markup=location_keyboard)
+    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения прихода.", reply_markup=location_keyboard)
 
-# Обработчик для запроса подтверждения ухода через локацию
 @dp.message_handler(lambda message: message.text == '🏁 Я ушёл')
 async def ask_location_left(message: types.Message):
     pending_actions[message.from_user.id] = 'left'
     location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Пожалуйста, поделитесь вашей локацией для подтверждения ухода.", reply_markup=location_keyboard)
+    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения ухода.", reply_markup=location_keyboard)
 
-# Обработчик входящих сообщений с локацией (без проверки – просто пересылает администратору)
+def process_location(user_id: int, lat: float, lon: float, full_name: str, username: str, action: str):
+    """Проверяет расстояние и, если оно в пределах допустимого радиуса, фиксирует действие."""
+    distance = calculate_distance(lat, lon, ALLOWED_LAT, ALLOWED_LON)
+    if distance > ALLOWED_RADIUS:
+        return (False, f"Ваше местоположение находится слишком далеко от разрешенной зоны (расстояние: {distance:.1f} м). Попробуйте отправить корректную локацию.")
+    now = datetime.datetime.now(tz)
+    try:
+        log_action(user_id, username, full_name, action)
+    except Exception as e:
+        logging.error(f"Error logging {action}: {e}")
+    if action == 'arrived':
+        response = '✅ Ваш приход подтвержден!'
+        admin_message = f"📌 **Приход**:\nПользователь: {full_name}"
+    else:
+        response = '🏁 Ваш уход подтвержден!'
+        admin_message = f"📌 **Уход**:\nПользователь: {full_name}"
+    if username:
+        admin_message += f" (@{username})"
+    admin_message += f"\nID: {user_id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    # Отправляем уведомление админу с данными и локацией
+    bot.loop.create_task(bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown'))
+    bot.loop.create_task(bot.send_location(ADMIN_CHAT_ID, latitude=lat, longitude=lon))
+    return (True, response + "\nЛокация соответствует установленному радиусу.")
+
+# Обработчик для стандартных сообщений с локацией (content_type=LOCATION)
 @dp.message_handler(content_types=types.ContentType.LOCATION)
 async def location_handler(message: types.Message):
     user_id = message.from_user.id
     if user_id not in pending_actions:
-        return  # Если нет ожидаемого действия, просто игнорируем
-    action = pending_actions.pop(user_id)
-    now = datetime.datetime.now(tz)
-    full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
-    try:
-        log_action(user_id, message.from_user.username, full_name, action)
-    except Exception as e:
-        logging.error(f"Error logging {action}: {e}")
-    if action == 'arrived':
-        await message.answer('✅ Ваш приход подтвержден!\n\nСпасибо, что отправили локацию!')
-        admin_message = f"📌 **Приход**:\nПользователь: {full_name}"
-    elif action == 'left':
-        await message.answer('🏁 Ваш уход подтвержден!\n\nСпасибо, что отправили локацию!')
-        admin_message = f"📌 **Уход**:\nПользователь: {full_name}"
-    else:
         return
-    if message.from_user.username:
-        admin_message += f" (@{message.from_user.username})"
-    admin_message += f"\nID: {user_id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown')
-    # Пересылаем администратору локацию пользователя
-    await bot.send_location(ADMIN_CHAT_ID, latitude=message.location.latitude, longitude=message.location.longitude)
+    action = pending_actions.pop(user_id)
+    full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
+    valid, resp = process_location(user_id, message.location.latitude, message.location.longitude,
+                                   full_name, message.from_user.username, action)
+    await message.answer(resp)
+
+# Обработчик для сообщений с ссылками Google Maps
+@dp.message_handler(lambda message: ("google.com/maps" in message.text or "goo.gl/maps" in message.text))
+async def google_maps_handler(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in pending_actions:
+        return
+    action = pending_actions.pop(user_id)
+    # Попытка извлечь координаты из ссылки
+    coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
+    if not coords:
+        await message.answer("Не удалось определить координаты из ссылки. Попробуйте отправить локацию через кнопку.")
+        return
+    lat, lon = map(float, coords[0])
+    full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
+    valid, resp = process_location(user_id, lat, lon, full_name, message.from_user.username, action)
+    await message.answer(resp)
 
 @dp.message_handler(lambda message: message.text == '📊 Моя статистика')
 async def stats(message: types.Message):
@@ -291,7 +333,7 @@ async def all_stats(message: types.Message):
     )
     await bot.send_photo(ADMIN_CHAT_ID, photo=types.InputFile(img_buffer, filename="stats.png"))
 
-# Команда-заглушка для интеграции с другими сервисами (например, отправка отчётов на email)
+# Команда-заглушка для интеграции с внешними сервисами (например, отправка отчётов на email)
 @dp.message_handler(commands=['send_summary'])
 async def send_summary(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID:
