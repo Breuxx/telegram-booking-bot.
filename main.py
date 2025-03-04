@@ -159,7 +159,8 @@ async def location_handler(message: types.Message):
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     valid, resp = await process_location_async(user_id, message.location.latitude, message.location.longitude,
                                                  full_name, message.from_user.username, action)
-    await message.answer(resp, reply_markup=ReplyKeyboardRemove())
+    # Отправляем ответ с главным меню, чтобы кнопки остались
+    await message.answer(resp, reply_markup=main_menu)
 
 @dp.message_handler(lambda message: ("google.com/maps" in message.text or "goo.gl/maps" in message.text))
 async def google_maps_handler(message: types.Message):
@@ -170,12 +171,12 @@ async def google_maps_handler(message: types.Message):
     coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
     if not coords:
         await message.answer("Не удалось определить координаты из ссылки. Попробуйте отправить локацию через кнопку.",
-                             reply_markup=ReplyKeyboardRemove())
+                             reply_markup=main_menu)
         return
     lat, lon = map(float, coords[0])
     full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
     valid, resp = await process_location_async(user_id, lat, lon, full_name, message.from_user.username, action)
-    await message.answer(resp, reply_markup=ReplyKeyboardRemove())
+    await message.answer(resp, reply_markup=main_menu)
 
 # === Новая команда: /search ===
 @dp.message_handler(commands=['search'])
