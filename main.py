@@ -54,7 +54,7 @@ employees = [
 # Флаги для редактирования списка сотрудников
 pending_employee_edit = False
 
-# (Функция геолокации оставлена на случай, если потребуется, но в данном варианте не используется)
+# Функция геолокации оставлена (в текущей версии не используется)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     R = 6371000
     phi1 = math.radians(lat)
@@ -81,7 +81,7 @@ async def start(message: types.Message):
     if not check_access(message):
         await message.answer("Access denied")
         return
-    # Отображаем список сотрудников через inline-клавиатуру
+    # Отображаем список сотрудников через inline‑клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=2)
     for i, emp in enumerate(employees):
         keyboard.add(InlineKeyboardButton(emp, callback_data=f"employee_{i}"))
@@ -202,8 +202,7 @@ async def search_command(message: types.Message):
             except Exception:
                 utc_time = datetime.datetime.fromisoformat(rec[4])
             utc_time = utc_time.replace(tzinfo=pytz.utc)
-            tashkent_time = utc_time.astimezone(tz)
-            adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
+            adjusted_time = utc_time.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
             filtered_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
     if not filtered_records:
         await message.answer("Нет записей для данного сотрудника.")
@@ -458,40 +457,43 @@ async def check_shift_reminders():
 
 # --- Ежемесячная очистка базы ---
 async def monthly_cleanup():
-    now = datetime.datetime.now(tz)
-    cutoff = now - datetime.timedelta(days=30)
-    cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
-    conn = sqlite3.connect('attendance.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM attendance WHERE timestamp < ?", (cutoff_str,))
-    old_records = cursor.fetchall()
-    if old_records:
-        # Формируем TXT-отчёт
-        txt_lines = ["employee_id, username, employee_name, action, timestamp"]
-        for rec in old_records:
-            txt_lines.append(", ".join(str(x) for x in rec))
-        txt_content = "\n".join(txt_lines)
-        # Формируем CSV-отчёт (открывается в Excel)
-        csv_output = io.StringIO()
-        writer = csv.writer(csv_output)
-        writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
-        for rec in old_records:
-            writer.writerow(rec)
-        csv_data = csv_output.getvalue()
-        csv_output.close()
-        # Отправляем отчёты администратору
-        await bot.send_document(ADMIN_CHAT_ID,
-                                types.InputFile(io.BytesIO(txt_content.encode('utf-8')), filename="monthly_report.txt"))
-        await bot.send_document(ADMIN_CHAT_ID,
-                                types.InputFile(io.BytesIO(csv_data.encode('utf-8')), filename="monthly_report.csv"))
-        # Удаляем устаревшие записи
-        cursor.execute("DELETE FROM attendance WHERE timestamp < ?", (cutoff_str,))
-        conn.commit()
-    conn.close()
+    try:
+        now = datetime.datetime.now(tz)
+        cutoff = now - datetime.timedelta(days=30)
+        cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+        conn = sqlite3.connect('attendance.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM attendance WHERE timestamp < ?", (cutoff_str,))
+        old_records = cursor.fetchall()
+        if old_records:
+            # Формируем TXT-отчёт
+            txt_lines = ["employee_id, username, employee_name, action, timestamp"]
+            for rec in old_records:
+                txt_lines.append(", ".join(str(x) for x in rec))
+            txt_content = "\n".join(txt_lines)
+            # Формируем CSV-отчёт (открывается в Excel)
+            csv_output = io.StringIO()
+            writer = csv.writer(csv_output)
+            writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
+            for rec in old_records:
+                writer.writerow(rec)
+            csv_data = csv_output.getvalue()
+            csv_output.close()
+            # Отправляем отчёты администратору
+            await bot.send_document(ADMIN_CHAT_ID,
+                                    types.InputFile(io.BytesIO(txt_content.encode('utf-8')), filename="monthly_report.txt"))
+            await bot.send_document(ADMIN_CHAT_ID,
+                                    types.InputFile(io.BytesIO(csv_data.encode('utf-8')), filename="monthly_report.csv"))
+            # Если отчёты успешно отправлены, удаляем устаревшие записи
+            cursor.execute("DELETE FROM attendance WHERE timestamp < ?", (cutoff_str,))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Monthly cleanup error: {e}")
 
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
-# Запускаем ежемесячную очистку: каждый 1‑й день месяца в 00:00 по Tashkенту
+# Ежемесячная очистка: запуск каждый 1‑й день месяца в 00:00 по Tashkента
 scheduler.add_job(monthly_cleanup, 'cron', day=1, hour=0, minute=0, timezone=tz)
 scheduler.start()
 
