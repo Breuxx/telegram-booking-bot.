@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
 
-# Для фонового планирования напоминаний и задач
+# Для фонового планирования напоминаний и ежемесячной очистки
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from db import (
@@ -34,9 +34,10 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
-# Ограничение доступа: только пользователь с указанным ID может пользоваться ботом
-ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))
-ADMIN_CHAT_ID = ALLOWED_USER_ID  # Админ – тот же пользователь
+# Разделяем переменные:
+ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))  # ID общего аккаунта (сотрудники)
+ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))        # ID администратора, на который отправляются отчёты
+
 tz = pytz.timezone('Asia/Tashkent')
 
 # Дефолтный список сотрудников (7 сотрудников)
@@ -50,10 +51,10 @@ employees = [
     "Сотрудник 7"
 ]
 
-# Флаги для редактирования
+# Флаги для редактирования списка сотрудников
 pending_employee_edit = False
 
-# (Функция геолокации не используется, но оставлена для истории)
+# (Функция геолокации оставлена на случай, если потребуется, но в данном варианте не используется)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     R = 6371000
     phi1 = math.radians(lat)
@@ -64,14 +65,15 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Главное меню, возвращаемое после действий
+# Главное меню (возвращается после выполнения действий)
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 main_menu.add(KeyboardButton('✅ Я пришёл'), KeyboardButton('🏁 Я ушёл'))
 main_menu.add(KeyboardButton('📊 Моя статистика'))
 main_menu.add(KeyboardButton('🕒 Установить график'))
 
+# Функция проверки доступа: разрешаем команды от ALLOWED_USER_ID и ADMIN_CHAT_ID
 def check_access(message: types.Message) -> bool:
-    return message.from_user.id == ALLOWED_USER_ID
+    return message.from_user.id in (ALLOWED_USER_ID, ADMIN_CHAT_ID)
 
 # --- Команда /start ---
 @dp.message_handler(commands=['start'])
@@ -79,7 +81,7 @@ async def start(message: types.Message):
     if not check_access(message):
         await message.answer("Access denied")
         return
-    # Показываем список сотрудников через inline‑клавиатуру
+    # Отображаем список сотрудников через inline-клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=2)
     for i, emp in enumerate(employees):
         keyboard.add(InlineKeyboardButton(emp, callback_data=f"employee_{i}"))
@@ -214,7 +216,7 @@ async def search_command(message: types.Message):
             result_text += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(result_text)
 
-# --- Команды для редактирования расписания и отчётов ---
+# --- Команда /edit_schedule ---
 @dp.message_handler(commands=['edit_schedule'])
 async def edit_schedule(message: types.Message):
     if not check_access(message):
@@ -228,6 +230,7 @@ async def edit_schedule(message: types.Message):
     msg += "Введите новый график в формате HH:MM-HH:MM (например, 09:00-17:00)"
     await message.answer(msg)
 
+# --- Обработка ввода расписания ---
 @dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
 async def schedule_input(message: types.Message):
     if not check_access(message):
@@ -247,6 +250,7 @@ async def schedule_input(message: types.Message):
         logging.error(f"Error setting schedule: {e}")
         await message.answer("Ошибка! Введите время в формате HH:MM-HH:MM (например, 14:00-22:00)")
 
+# --- Команды отчетности ---
 @dp.message_handler(commands=['daily_report'])
 async def daily_report(message: types.Message):
     if not check_access(message):
@@ -452,7 +456,7 @@ async def check_shift_reminders():
         if reminder_end <= now < reminder_end + datetime.timedelta(minutes=1):
             await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
 
-# --- Функция ежемесячной очистки ---  
+# --- Ежемесячная очистка базы ---
 async def monthly_cleanup():
     now = datetime.datetime.now(tz)
     cutoff = now - datetime.timedelta(days=30)
@@ -467,7 +471,7 @@ async def monthly_cleanup():
         for rec in old_records:
             txt_lines.append(", ".join(str(x) for x in rec))
         txt_content = "\n".join(txt_lines)
-        # Формируем CSV-отчёт (который можно открыть в Excel)
+        # Формируем CSV-отчёт (открывается в Excel)
         csv_output = io.StringIO()
         writer = csv.writer(csv_output)
         writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
@@ -485,10 +489,9 @@ async def monthly_cleanup():
         conn.commit()
     conn.close()
 
-# Планировщик задач
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
-# Ежемесячная очистка: запуск каждый 1‑й день месяца в 00:00 по Tashkenta
+# Запускаем ежемесячную очистку: каждый 1‑й день месяца в 00:00 по Tashkенту
 scheduler.add_job(monthly_cleanup, 'cron', day=1, hour=0, minute=0, timezone=tz)
 scheduler.start()
 
