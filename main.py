@@ -36,22 +36,22 @@ dp = Dispatcher(bot)
 
 # Разделяем переменные:
 ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))  # ID общего аккаунта (сотрудники)
-ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))        # ID администратора, на который отправляются отчёты
+ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))        # ID администратора (админские команды и отчёты)
 
 tz = pytz.timezone('Asia/Tashkent')
 
-# Дефолтный список сотрудников (7 сотрудников)
+# Дефолтный список сотрудников (7 сотрудников) с эмодзи
 employees = [
-    "Сотрудник 1",
-    "Сотрудник 2",
-    "Сотрудник 3",
-    "Сотрудник 4",
-    "Сотрудник 5",
-    "Сотрудник 6",
-    "Сотрудник 7"
+    "👤 Сотрудник 1",
+    "👤 Сотрудник 2",
+    "👤 Сотрудник 3",
+    "👤 Сотрудник 4",
+    "👤 Сотрудник 5",
+    "👤 Сотрудник 6",
+    "👤 Сотрудник 7"
 ]
 
-# Флаги для редактирования списка сотрудников
+# Флаг для редактирования списка сотрудников
 pending_employee_edit = False
 
 # Функция геолокации оставлена (не используется в данной версии)
@@ -65,14 +65,19 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Новое главное меню (с эмодзи) – используется для возврата, если потребуется, но теперь после отметки мы убираем клавиатуру.
+# Главное меню (для возврата к выбору)
+# Теперь в главном меню кнопки украшены эмодзи и отражают действия
 default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
 default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
 
-# Функция проверки доступа: разрешаем команды от ALLOWED_USER_ID и ADMIN_CHAT_ID
+# Функция проверки доступа для общих команд (приход/уход)
 def check_access(message: types.Message) -> bool:
     return message.from_user.id in (ALLOWED_USER_ID, ADMIN_CHAT_ID)
+
+# Функция проверки, что команда админская (только для ADMIN_CHAT_ID)
+def admin_only(message: types.Message) -> bool:
+    return message.from_user.id == ADMIN_CHAT_ID
 
 # --- Команда /start ---
 @dp.message_handler(commands=['start'])
@@ -80,7 +85,7 @@ async def start(message: types.Message):
     if not check_access(message):
         await message.answer("Access denied")
         return
-    # Отображаем список сотрудников через inline‑клавиатуру
+    # Отображаем список сотрудников через inline-клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=2)
     for i, emp in enumerate(employees):
         keyboard.add(InlineKeyboardButton(emp, callback_data=f"employee_{i}"))
@@ -111,7 +116,7 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # Отправляем сообщение без прикрепленной клавиатуры – кнопки удаляются
+    # После отметки отправляем сообщение без клавиатуры – кнопки исчезают, и сотруднику нужно заново вызвать /start
     await bot.send_message(callback_query.from_user.id,
                            f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
                            reply_markup=ReplyKeyboardRemove())
@@ -136,20 +141,28 @@ async def attend_left_handler(callback_query: types.CallbackQuery):
                            f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
     await bot.answer_callback_query(callback_query.id)
 
-# --- Команда /edit_employees для редактирования списка сотрудников ---
+# --- Команда /edit_employees (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['edit_employees'])
 async def edit_employees(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     global pending_employee_edit
     pending_employee_edit = True
     await message.answer("Введите новый список сотрудников через запятую (например: Иванов, Петров, Сидоров):")
 
-@dp.message_handler(lambda message: pending_employee_edit and check_access(message))
+@dp.message_handler(lambda message: pending_employee_edit and admin_only(message))
 async def handle_employee_edit(message: types.Message):
     global employees, pending_employee_edit
-    new_list = [name.strip() for name in message.text.split(",") if name.strip()]
+    # Если имя не начинается с эмодзи "👤", добавляем его автоматически
+    new_list = []
+    for name in message.text.split(","):
+        name = name.strip()
+        if name and not name.startswith("👤"):
+            name = "👤 " + name
+        elif name:
+            name = name  # если уже есть эмодзи, оставить как есть
+        new_list.append(name)
     if not new_list:
         await message.answer("Список пуст. Попробуйте еще раз.")
         return
@@ -157,10 +170,10 @@ async def handle_employee_edit(message: types.Message):
     pending_employee_edit = False
     await message.answer(f"Список сотрудников обновлён: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
-# --- Команда /delete_employee для удаления сотрудника ---
+# --- Команда /delete_employee (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['delete_employee'])
 async def delete_employee(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     parts = message.text.split()
@@ -178,10 +191,10 @@ async def delete_employee(message: types.Message):
     removed = employees.pop(idx)
     await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
-# --- Команда /search для поиска записей по employee_id ---
+# --- Команда /search (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['search'])
 async def search_command(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     parts = message.text.split()
@@ -215,10 +228,10 @@ async def search_command(message: types.Message):
             result_text += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(result_text)
 
-# --- Команда /edit_schedule ---
+# --- Команда /edit_schedule (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['edit_schedule'])
 async def edit_schedule(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     current = get_schedule(message.from_user.id)
@@ -232,7 +245,7 @@ async def edit_schedule(message: types.Message):
 # --- Обработка ввода расписания ---
 @dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
 async def schedule_input(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     try:
@@ -249,10 +262,10 @@ async def schedule_input(message: types.Message):
         logging.error(f"Error setting schedule: {e}")
         await message.answer("Ошибка! Введите время в формате HH:MM-HH:MM (например, 14:00-22:00)", reply_markup=ReplyKeyboardRemove())
 
-# --- Команды отчетности ---
+# --- Команды отчетности (АДМИНСКИЕ) ---
 @dp.message_handler(commands=['daily_report'])
 async def daily_report(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
@@ -280,7 +293,7 @@ async def daily_report(message: types.Message):
 
 @dp.message_handler(commands=['weekly_report'])
 async def weekly_report(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
@@ -309,7 +322,7 @@ async def weekly_report(message: types.Message):
 
 @dp.message_handler(commands=['monthly_report'])
 async def monthly_report(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
@@ -338,7 +351,7 @@ async def monthly_report(message: types.Message):
 
 @dp.message_handler(commands=['allstats'])
 async def all_stats(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     records = get_all_records()
@@ -393,7 +406,7 @@ async def all_stats(message: types.Message):
 
 @dp.message_handler(commands=['send_summary'])
 async def send_summary(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     await message.answer("Функция отправки отчётов на email ещё не реализована.")
@@ -401,7 +414,7 @@ async def send_summary(message: types.Message):
 # --- Админ-панель ---
 @dp.message_handler(commands=['admin_panel'])
 async def admin_panel(message: types.Message):
-    if not check_access(message):
+    if not admin_only(message):
         await message.answer("Access denied")
         return
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -471,7 +484,7 @@ async def monthly_cleanup():
             for rec in old_records:
                 txt_lines.append(", ".join(str(x) for x in rec))
             txt_content = "\n".join(txt_lines)
-            # Формируем CSV-отчёт (открывается в Excel)
+            # Формируем CSV-отчёт (для Excel)
             csv_output = io.StringIO()
             writer = csv.writer(csv_output)
             writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
