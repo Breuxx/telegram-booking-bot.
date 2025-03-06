@@ -6,6 +6,7 @@ import csv
 import io
 import os
 import asyncio
+import sqlite3
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
 
-# Для фонового планирования напоминаний
+# Для фонового планирования напоминаний и задач
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from db import (
@@ -33,12 +34,12 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
-# Ограничение доступа: только один разрешённый пользователь
+# Ограничение доступа: только пользователь с указанным ID может пользоваться ботом
 ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))
-ADMIN_CHAT_ID = ALLOWED_USER_ID  # Админ – единственный разрешённый
+ADMIN_CHAT_ID = ALLOWED_USER_ID  # Админ – тот же пользователь
 tz = pytz.timezone('Asia/Tashkent')
 
-# Дефолтный список сотрудников (7 человек)
+# Дефолтный список сотрудников (7 сотрудников)
 employees = [
     "Сотрудник 1",
     "Сотрудник 2",
@@ -49,10 +50,10 @@ employees = [
     "Сотрудник 7"
 ]
 
-# Флаг для ожидания редактирования списка сотрудников
+# Флаги для редактирования
 pending_employee_edit = False
 
-# (Функция геолокации остаётся, хотя в данной версии она не используется)
+# (Функция геолокации не используется, но оставлена для истории)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     R = 6371000
     phi1 = math.radians(lat)
@@ -63,7 +64,7 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Главное меню, которое будет отображаться после выполнения действий
+# Главное меню, возвращаемое после действий
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 main_menu.add(KeyboardButton('✅ Я пришёл'), KeyboardButton('🏁 Я ушёл'))
 main_menu.add(KeyboardButton('📊 Моя статистика'))
@@ -78,7 +79,7 @@ async def start(message: types.Message):
     if not check_access(message):
         await message.answer("Access denied")
         return
-    # Отображаем список сотрудников через inline-клавиатуру
+    # Показываем список сотрудников через inline‑клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=2)
     for i, emp in enumerate(employees):
         keyboard.add(InlineKeyboardButton(emp, callback_data=f"employee_{i}"))
@@ -109,11 +110,9 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # Отправляем уведомление сотруднику
     await bot.send_message(callback_query.from_user.id,
                            f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
                            reply_markup=main_menu)
-    # Отправляем уведомление администратору
     await bot.send_message(ADMIN_CHAT_ID,
                            f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
     await bot.answer_callback_query(callback_query.id)
@@ -177,7 +176,7 @@ async def delete_employee(message: types.Message):
     removed = employees.pop(idx)
     await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=main_menu)
 
-# --- Команда /search для поиска записей по employee_id (номер сотрудника) ---
+# --- Команда /search для поиска записей по employee_id ---
 @dp.message_handler(commands=['search'])
 async def search_command(message: types.Message):
     if not check_access(message):
@@ -215,7 +214,7 @@ async def search_command(message: types.Message):
             result_text += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(result_text)
 
-# --- Остальные команды (расписание, отчёты, графики) ---
+# --- Команды для редактирования расписания и отчётов ---
 @dp.message_handler(commands=['edit_schedule'])
 async def edit_schedule(message: types.Message):
     if not check_access(message):
@@ -254,17 +253,16 @@ async def daily_report(message: types.Message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
-    all_records = get_all_records()
+    records = get_all_records()
     daily_records = []
-    for rec in all_records:
+    for rec in records:
         try:
             utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
         except Exception:
             utc_time = datetime.datetime.fromisoformat(rec[4])
         utc_time = utc_time.replace(tzinfo=pytz.utc)
-        tashkent_time = utc_time.astimezone(tz)
-        if tashkent_time.date() == today:
-            adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
+        if utc_time.astimezone(tz).date() == today:
+            adjusted_time = utc_time.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
             daily_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
     if not daily_records:
         await message.answer("Нет записей за сегодня.")
@@ -284,17 +282,16 @@ async def weekly_report(message: types.Message):
         return
     today = datetime.datetime.now(tz).date()
     week_ago = today - datetime.timedelta(days=7)
-    all_records = get_all_records()
+    records = get_all_records()
     weekly_records = []
-    for rec in all_records:
+    for rec in records:
         try:
             utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
         except Exception:
             utc_time = datetime.datetime.fromisoformat(rec[4])
         utc_time = utc_time.replace(tzinfo=pytz.utc)
-        tashkent_time = utc_time.astimezone(tz)
-        if week_ago <= tashkent_time.date() <= today:
-            adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
+        if week_ago <= utc_time.astimezone(tz).date() <= today:
+            adjusted_time = utc_time.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
             weekly_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
     if not weekly_records:
         await message.answer("Нет записей за последнюю неделю.")
@@ -314,17 +311,16 @@ async def monthly_report(message: types.Message):
         return
     today = datetime.datetime.now(tz).date()
     month_ago = today - datetime.timedelta(days=30)
-    all_records = get_all_records()
+    records = get_all_records()
     monthly_records = []
-    for rec in all_records:
+    for rec in records:
         try:
             utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
         except Exception:
             utc_time = datetime.datetime.fromisoformat(rec[4])
         utc_time = utc_time.replace(tzinfo=pytz.utc)
-        tashkent_time = utc_time.astimezone(tz)
-        if month_ago <= tashkent_time.date() <= today:
-            adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
+        if month_ago <= utc_time.astimezone(tz).date() <= today:
+            adjusted_time = utc_time.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
             monthly_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
     if not monthly_records:
         await message.answer("Нет записей за последний месяц.")
@@ -353,9 +349,8 @@ async def all_stats(message: types.Message):
         except Exception:
             utc_time = datetime.datetime.fromisoformat(rec[4])
         utc_time = utc_time.replace(tzinfo=pytz.utc)
-        tashkent_time = utc_time.astimezone(tz)
-        new_rec = (rec[0], rec[1], rec[2], rec[3], tashkent_time.strftime('%Y-%m-%d %H:%M:%S'))
-        adjusted_records.append(new_rec)
+        adjusted_time = utc_time.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
+        adjusted_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
@@ -457,8 +452,44 @@ async def check_shift_reminders():
         if reminder_end <= now < reminder_end + datetime.timedelta(minutes=1):
             await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
 
+# --- Функция ежемесячной очистки ---  
+async def monthly_cleanup():
+    now = datetime.datetime.now(tz)
+    cutoff = now - datetime.timedelta(days=30)
+    cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect('attendance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM attendance WHERE timestamp < ?", (cutoff_str,))
+    old_records = cursor.fetchall()
+    if old_records:
+        # Формируем TXT-отчёт
+        txt_lines = ["employee_id, username, employee_name, action, timestamp"]
+        for rec in old_records:
+            txt_lines.append(", ".join(str(x) for x in rec))
+        txt_content = "\n".join(txt_lines)
+        # Формируем CSV-отчёт (который можно открыть в Excel)
+        csv_output = io.StringIO()
+        writer = csv.writer(csv_output)
+        writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
+        for rec in old_records:
+            writer.writerow(rec)
+        csv_data = csv_output.getvalue()
+        csv_output.close()
+        # Отправляем отчёты администратору
+        await bot.send_document(ADMIN_CHAT_ID,
+                                types.InputFile(io.BytesIO(txt_content.encode('utf-8')), filename="monthly_report.txt"))
+        await bot.send_document(ADMIN_CHAT_ID,
+                                types.InputFile(io.BytesIO(csv_data.encode('utf-8')), filename="monthly_report.csv"))
+        # Удаляем устаревшие записи
+        cursor.execute("DELETE FROM attendance WHERE timestamp < ?", (cutoff_str,))
+        conn.commit()
+    conn.close()
+
+# Планировщик задач
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
+# Ежемесячная очистка: запуск каждый 1‑й день месяца в 00:00 по Tashkenta
+scheduler.add_job(monthly_cleanup, 'cron', day=1, hour=0, minute=0, timezone=tz)
 scheduler.start()
 
 if __name__ == '__main__':
