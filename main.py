@@ -33,24 +33,28 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
-# Получаем ID администратора и устанавливаем часовой пояс для Ташкента
-ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
+# Ограничение доступа: только один разрешённый пользователь
+ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))
+ADMIN_CHAT_ID = ALLOWED_USER_ID  # Админ – единственный разрешённый
 tz = pytz.timezone('Asia/Tashkent')
 
-# Разрешённая точка (по умолчанию)
-ALLOWED_LAT = 41.2995      # начальная широта (центр Ташкента)
-ALLOWED_LON = 69.2401      # начальная долгота
-ALLOWED_RADIUS = 1000      # радиус проверки в метрах
+# Дефолтный список сотрудников (7 человек)
+employees = [
+    "Сотрудник 1",
+    "Сотрудник 2",
+    "Сотрудник 3",
+    "Сотрудник 4",
+    "Сотрудник 5",
+    "Сотрудник 6",
+    "Сотрудник 7"
+]
 
-# Флаг для ожидания установки новой точки проверки от админа
-pending_allowed_location = False
+# Флаг для ожидания редактирования списка сотрудников
+pending_employee_edit = False
 
-# Глобальный словарь для хранения ожидаемых действий пользователя (приход/уход)
-pending_actions = {}
-
+# (Функция геолокации остаётся, хотя в данной версии она не используется)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
-    """Вычисляет расстояние между двумя координатами (в метрах) по формуле гаверсина."""
-    R = 6371000  # Радиус Земли в метрах
+    R = 6371000
     phi1 = math.radians(lat)
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat)
@@ -59,145 +63,138 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Главное меню для пользователей
+# Главное меню, которое будет отображаться после выполнения действий
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 main_menu.add(KeyboardButton('✅ Я пришёл'), KeyboardButton('🏁 Я ушёл'))
 main_menu.add(KeyboardButton('📊 Моя статистика'))
 main_menu.add(KeyboardButton('🕒 Установить график'))
 
+def check_access(message: types.Message) -> bool:
+    return message.from_user.id == ALLOWED_USER_ID
+
+# --- Команда /start ---
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
-    await message.answer(
-        f"👋 Привет, {message.from_user.first_name}!\n\nВыбери действие:",
-        reply_markup=main_menu
-    )
-
-# === Новый функционал: установка точки проверки администратором ===
-@dp.message_handler(commands=['set_allowed_location'])
-async def set_allowed_location_command(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
-    global pending_allowed_location
-    pending_allowed_location = True
-    location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Отправьте, пожалуйста, локацию, которая станет новой точкой проверки (ALLOWED_LAT, ALLOWED_LON).",
-                         reply_markup=location_keyboard)
+    # Отображаем список сотрудников через inline-клавиатуру
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    for i, emp in enumerate(employees):
+        keyboard.add(InlineKeyboardButton(emp, callback_data=f"employee_{i}"))
+    await message.answer("Выберите сотрудника для отметки прихода/ухода:", reply_markup=keyboard)
 
-@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location,
-                    content_types=types.ContentType.LOCATION)
-async def admin_location_handler(message: types.Message):
-    global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
-    ALLOWED_LAT = message.location.latitude
-    ALLOWED_LON = message.location.longitude
-    pending_allowed_location = False
-    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}",
-                         reply_markup=ReplyKeyboardRemove())
+# --- Обработка выбора сотрудника ---
+@dp.callback_query_handler(lambda c: c.data.startswith("employee_"))
+async def employee_selection_handler(callback_query: types.CallbackQuery):
+    index = int(callback_query.data.split("_")[1])
+    employee_name = employees[index]
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("Приход", callback_data=f"attend_arrived_{index}"),
+        InlineKeyboardButton("Уход", callback_data=f"attend_left_{index}")
+    )
+    await bot.send_message(callback_query.from_user.id,
+                           f"Вы выбрали сотрудника: {employee_name}\nВыберите действие:",
+                           reply_markup=keyboard)
+    await bot.answer_callback_query(callback_query.id)
 
-@dp.message_handler(lambda message: message.from_user.id == ADMIN_CHAT_ID and pending_allowed_location and 
-                    ("maps.apple.com" in message.text or "goo.gl/maps" in message.text))
-async def admin_maps_link_handler(message: types.Message):
-    global ALLOWED_LAT, ALLOWED_LON, pending_allowed_location
-    coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
-    if not coords:
-        await message.answer("Не удалось извлечь координаты из ссылки. Попробуйте отправить локацию через кнопку.")
-        return
-    ALLOWED_LAT, ALLOWED_LON = map(float, coords[0])
-    pending_allowed_location = False
-    await message.answer(f"Новая точка проверки установлена:\nШирота: {ALLOWED_LAT}\nДолгота: {ALLOWED_LON}",
-                         reply_markup=ReplyKeyboardRemove())
-
-# === Обработка пользовательских действий (приход/уход) с проверкой локации ===
-@dp.message_handler(lambda message: message.text == '✅ Я пришёл')
-async def ask_location_arrived(message: types.Message):
-    pending_actions[message.from_user.id] = 'arrived'
-    location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения прихода.",
-                         reply_markup=location_keyboard)
-
-@dp.message_handler(lambda message: message.text == '🏁 Я ушёл')
-async def ask_location_left(message: types.Message):
-    pending_actions[message.from_user.id] = 'left'
-    location_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    location_keyboard.add(KeyboardButton("Поделиться локацией", request_location=True))
-    await message.answer("Пожалуйста, отправьте вашу локацию для подтверждения ухода.",
-                         reply_markup=location_keyboard)
-
-async def process_location_async(user_id: int, lat: float, lon: float,
-                                 full_name: str, username: str, action: str):
-    """Асинхронно проверяет расстояние от отправленной локации до разрешённой точки и фиксирует действие."""
-    distance = calculate_distance(lat, lon, ALLOWED_LAT, ALLOWED_LON)
-    if distance > ALLOWED_RADIUS:
-        return (False, f"Ваше местоположение находится слишком далеко от разрешенной зоны (расстояние: {distance:.1f} м). Попробуйте отправить корректную локацию.")
+# --- Обработка отметки "Приход" ---
+@dp.callback_query_handler(lambda c: c.data.startswith("attend_arrived_"))
+async def attend_arrived_handler(callback_query: types.CallbackQuery):
+    index = int(callback_query.data.split("_")[-1])
+    employee_name = employees[index]
     now = datetime.datetime.now(tz)
-    loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(None, log_action, user_id, username, full_name, action)
+        log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
-        logging.error(f"Error logging {action}: {e}")
-    if action == 'arrived':
-        response = '✅ Ваш приход подтвержден!'
-        admin_message = f"📌 **Приход**:\nПользователь: {full_name}"
-    else:
-        response = '🏁 Ваш уход подтвержден!'
-        admin_message = f"📌 **Уход**:\nПользователь: {full_name}"
-    if username:
-        admin_message += f" (@{username})"
-    admin_message += f"\nID: {user_id}\nВремя: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    asyncio.create_task(bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode='Markdown'))
-    asyncio.create_task(bot.send_location(ADMIN_CHAT_ID, latitude=lat, longitude=lon))
-    return (True, response + f"\nРасстояние до точки проверки: {distance:.1f} м.")
+        logging.error(f"Error logging arrived: {e}")
+    # Отправляем уведомление сотруднику
+    await bot.send_message(callback_query.from_user.id,
+                           f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
+                           reply_markup=main_menu)
+    # Отправляем уведомление администратору
+    await bot.send_message(ADMIN_CHAT_ID,
+                           f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    await bot.answer_callback_query(callback_query.id)
 
-@dp.message_handler(content_types=types.ContentType.LOCATION)
-async def location_handler(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in pending_actions:
-        return  # Если нет ожидаемого действия – не обрабатываем
-    action = pending_actions.pop(user_id)
-    full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
-    valid, resp = await process_location_async(user_id, message.location.latitude, message.location.longitude,
-                                                 full_name, message.from_user.username, action)
-    # Отправляем ответ с главным меню, чтобы кнопки остались
-    await message.answer(resp, reply_markup=main_menu)
+# --- Обработка отметки "Уход" ---
+@dp.callback_query_handler(lambda c: c.data.startswith("attend_left_"))
+async def attend_left_handler(callback_query: types.CallbackQuery):
+    index = int(callback_query.data.split("_")[-1])
+    employee_name = employees[index]
+    now = datetime.datetime.now(tz)
+    try:
+        log_action(index + 1, "", employee_name, "left")
+    except Exception as e:
+        logging.error(f"Error logging left: {e}")
+    await bot.send_message(callback_query.from_user.id,
+                           f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
+                           reply_markup=main_menu)
+    await bot.send_message(ADMIN_CHAT_ID,
+                           f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    await bot.answer_callback_query(callback_query.id)
 
-@dp.message_handler(lambda message: ("google.com/maps" in message.text or "goo.gl/maps" in message.text))
-async def google_maps_handler(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in pending_actions:
+# --- Команда /edit_employees для редактирования списка сотрудников ---
+@dp.message_handler(commands=['edit_employees'])
+async def edit_employees(message: types.Message):
+    if not check_access(message):
+        await message.answer("Access denied")
         return
-    action = pending_actions.pop(user_id)
-    coords = re.findall(r"(-?\d+\.\d+),\s*(-?\d+\.\d+)", message.text)
-    if not coords:
-        await message.answer("Не удалось определить координаты из ссылки. Попробуйте отправить локацию через кнопку.",
-                             reply_markup=main_menu)
-        return
-    lat, lon = map(float, coords[0])
-    full_name = message.from_user.first_name + ((" " + message.from_user.last_name) if message.from_user.last_name else "")
-    valid, resp = await process_location_async(user_id, lat, lon, full_name, message.from_user.username, action)
-    await message.answer(resp, reply_markup=main_menu)
+    global pending_employee_edit
+    pending_employee_edit = True
+    await message.answer("Введите новый список сотрудников через запятую (например: Иванов, Петров, Сидоров):")
 
-# === Новая команда: /search ===
-@dp.message_handler(commands=['search'])
-async def search_command(message: types.Message):
-    # Доступна только администратору
-    if message.from_user.id != ADMIN_CHAT_ID:
+@dp.message_handler(lambda message: pending_employee_edit and check_access(message))
+async def handle_employee_edit(message: types.Message):
+    global employees, pending_employee_edit
+    new_list = [name.strip() for name in message.text.split(",") if name.strip()]
+    if not new_list:
+        await message.answer("Список пуст. Попробуйте еще раз.")
+        return
+    employees = new_list
+    pending_employee_edit = False
+    await message.answer(f"Список сотрудников обновлён: {', '.join(employees)}", reply_markup=main_menu)
+
+# --- Команда /delete_employee для удаления сотрудника ---
+@dp.message_handler(commands=['delete_employee'])
+async def delete_employee(message: types.Message):
+    if not check_access(message):
         await message.answer("Access denied")
         return
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Используйте: /search <user_id>")
+        await message.answer("Используйте: /delete_employee <employee_number>\n(Нумерация начинается с 1)")
+        return
+    try:
+        idx = int(parts[1]) - 1
+    except ValueError:
+        await message.answer("Некорректный номер сотрудника. Он должен быть числом.")
+        return
+    if idx < 0 or idx >= len(employees):
+        await message.answer("Сотрудник с таким номером не найден.")
+        return
+    removed = employees.pop(idx)
+    await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=main_menu)
+
+# --- Команда /search для поиска записей по employee_id (номер сотрудника) ---
+@dp.message_handler(commands=['search'])
+async def search_command(message: types.Message):
+    if not check_access(message):
+        await message.answer("Access denied")
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Используйте: /search <employee_id>")
         return
     try:
         search_id = int(parts[1])
     except ValueError:
-        await message.answer("Некорректный user_id. Он должен быть числом.")
+        await message.answer("Некорректный employee_id. Он должен быть числом.")
         return
     records = get_all_records()
     filtered_records = []
     for rec in records:
-        # rec: (user_id, username, full_name, action, timestamp)
         if rec[0] == search_id:
             try:
                 utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
@@ -208,31 +205,22 @@ async def search_command(message: types.Message):
             adjusted_time = tashkent_time.strftime('%Y-%m-%d %H:%M:%S')
             filtered_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
     if not filtered_records:
-        await message.answer("Нет записей для данного пользователя.")
+        await message.answer("Нет записей для данного сотрудника.")
     else:
-        result_text = f"Записи для пользователя {search_id}:\n\n"
+        result_text = f"Записи для сотрудника {search_id}:\n\n"
         for rec in filtered_records:
             user_disp = rec[2]
             if rec[1]:
                 user_disp += f" (@{rec[1]})"
-            result_text += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
+            result_text += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(result_text)
 
-@dp.message_handler(lambda message: message.text == '📊 Моя статистика')
-async def stats(message: types.Message):
-    try:
-        total = get_user_stats(message.from_user.id)
-    except Exception as e:
-        logging.error(f"Error getting stats: {e}")
-        total = 0
-    await message.answer(f"📊 Ваша активность:\n\n📅 Всего отметок: {total}")
-
-@dp.message_handler(lambda message: message.text == '🕒 Установить график')
-async def set_schedule_handler(message: types.Message):
-    await message.answer("Введите ваш график в формате HH:MM-HH:MM (например, 14:00-22:00)")
-
+# --- Остальные команды (расписание, отчёты, графики) ---
 @dp.message_handler(commands=['edit_schedule'])
 async def edit_schedule(message: types.Message):
+    if not check_access(message):
+        await message.answer("Access denied")
+        return
     current = get_schedule(message.from_user.id)
     if current:
         msg = f"Ваш текущий график: {current[0]} - {current[1]}\n"
@@ -243,6 +231,9 @@ async def edit_schedule(message: types.Message):
 
 @dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
 async def schedule_input(message: types.Message):
+    if not check_access(message):
+        await message.answer("Access denied")
+        return
     try:
         parts = message.text.split('-')
         if len(parts) != 2:
@@ -259,7 +250,7 @@ async def schedule_input(message: types.Message):
 
 @dp.message_handler(commands=['daily_report'])
 async def daily_report(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
@@ -283,12 +274,12 @@ async def daily_report(message: types.Message):
             user_disp = rec[2]
             if rec[1]:
                 user_disp += f" (@{rec[1]})"
-            report += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
+            report += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(report)
 
 @dp.message_handler(commands=['weekly_report'])
 async def weekly_report(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
@@ -313,12 +304,12 @@ async def weekly_report(message: types.Message):
             user_disp = rec[2]
             if rec[1]:
                 user_disp += f" (@{rec[1]})"
-            report += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
+            report += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(report)
 
 @dp.message_handler(commands=['monthly_report'])
 async def monthly_report(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
     today = datetime.datetime.now(tz).date()
@@ -343,19 +334,18 @@ async def monthly_report(message: types.Message):
             user_disp = rec[2]
             if rec[1]:
                 user_disp += f" (@{rec[1]})"
-            report += f"Пользователь: {user_disp} - {rec[3]} в {rec[4]}\n"
+            report += f"Сотрудник: {user_disp} - {rec[3]} в {rec[4]}\n"
         await message.answer(report)
 
 @dp.message_handler(commands=['allstats'])
 async def all_stats(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
     records = get_all_records()
     if not records:
         await message.answer("Нет записей.")
         return
-
     adjusted_records = []
     for rec in records:
         try:
@@ -366,14 +356,12 @@ async def all_stats(message: types.Message):
         tashkent_time = utc_time.astimezone(tz)
         new_rec = (rec[0], rec[1], rec[2], rec[3], tashkent_time.strftime('%Y-%m-%d %H:%M:%S'))
         adjusted_records.append(new_rec)
-
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["user_id", "username", "full_name", "action", "timestamp"])
+    writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
     for rec in adjusted_records:
         writer.writerow(rec)
     output.seek(0)
-
     dates = {}
     for rec in adjusted_records:
         date_only = rec[4].split()[0]
@@ -386,7 +374,6 @@ async def all_stats(message: types.Message):
     sorted_dates = sorted(dates.keys())
     arrived_counts = [dates[d]["arrived"] for d in sorted_dates]
     left_counts = [dates[d]["left"] for d in sorted_dates]
-
     plt.figure(figsize=(10, 5))
     plt.plot(sorted_dates, arrived_counts, marker='o', label='Приход')
     plt.plot(sorted_dates, left_counts, marker='o', label='Уход')
@@ -396,12 +383,10 @@ async def all_stats(message: types.Message):
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
-
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png')
     plt.close()
     img_buffer.seek(0)
-
     await bot.send_document(
         ADMIN_CHAT_ID,
         types.InputFile(io.BytesIO(output.getvalue().encode('utf-8')), filename="allstats.csv")
@@ -410,15 +395,15 @@ async def all_stats(message: types.Message):
 
 @dp.message_handler(commands=['send_summary'])
 async def send_summary(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
     await message.answer("Функция отправки отчётов на email ещё не реализована.")
 
-# === Админ-панель ===
+# --- Админ-панель ---
 @dp.message_handler(commands=['admin_panel'])
 async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
+    if not check_access(message):
         await message.answer("Access denied")
         return
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -437,7 +422,7 @@ async def process_detailed_report(callback_query: types.CallbackQuery):
     else:
         detailed_text = "Детализированный отчёт:\n\n"
         for rec in records:
-            detailed_text += f"ID: {rec[0]}, Пользователь: {rec[2]}, Действие: {rec[3]}, Время: {rec[4]}\n"
+            detailed_text += f"ID: {rec[0]}, Сотрудник: {rec[2]}, Действие: {rec[3]}, Время: {rec[4]}\n"
     await bot.send_message(ADMIN_CHAT_ID, detailed_text)
     await bot.answer_callback_query(callback_query.id)
 
@@ -451,7 +436,7 @@ async def process_edit_schedules(callback_query: types.CallbackQuery):
     await bot.send_message(ADMIN_CHAT_ID, "Чтобы редактировать расписания, используйте команду /edit_schedule")
     await bot.answer_callback_query(callback_query.id)
 
-# === Напоминания по расписанию ===
+# --- Напоминания по расписанию ---
 async def check_shift_reminders():
     schedules = get_all_schedules()
     now = datetime.datetime.now(tz)
