@@ -40,7 +40,7 @@ ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))        # ID администра
 
 tz = pytz.timezone('Asia/Tashkent')
 
-# Дефолтный список сотрудников (7 сотрудников) – с эмодзи
+# Дефолтный список сотрудников (7 сотрудников) с эмодзи
 employees = [
     "👤 Сотрудник 1",
     "👤 Сотрудник 2",
@@ -54,7 +54,7 @@ employees = [
 # Флаг для редактирования списка сотрудников
 pending_employee_edit = False
 
-# Функция геолокации оставлена (в данной версии не используется)
+# Функция геолокации оставлена (не используется в данной версии)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     R = 6371000
     phi1 = math.radians(lat)
@@ -65,7 +65,8 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Новое меню по умолчанию – оно больше не используется для отметок, так как после отметки клавиатура удаляется
+# Новое главное меню (для возврата к выбору действий) – после отметки клавиатура удаляется,
+# и для следующего действия сотруднику нужно заново вызвать /start.
 default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
 default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
@@ -116,7 +117,7 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # После отметки отправляем сообщение без клавиатуры – для следующего действия сотруднику нужно заново вызвать /start
+    # После отметки отправляем сообщение без клавиатуры
     await bot.send_message(callback_query.from_user.id,
                            f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
                            reply_markup=ReplyKeyboardRemove())
@@ -169,6 +170,21 @@ async def handle_employee_edit(message: types.Message):
     pending_employee_edit = False
     await message.answer(f"Список сотрудников обновлён: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
+# --- Новая команда /add_employee (АДМИНСКАЯ) для добавления сотрудника ---
+@dp.message_handler(commands=['add_employee'])
+async def add_employee(message: types.Message):
+    if not admin_only(message):
+        await message.answer("Access denied")
+        return
+    new_emp = message.get_args().strip()
+    if not new_emp:
+        await message.answer("Используйте: /add_employee <имя сотрудника>")
+        return
+    if not new_emp.startswith("👤"):
+        new_emp = "👤 " + new_emp
+    employees.append(new_emp)
+    await message.answer(f"Сотрудник {new_emp} добавлен.\nТекущий список: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
+
 # --- Команда /delete_employee (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['delete_employee'])
 async def delete_employee(message: types.Message):
@@ -190,7 +206,7 @@ async def delete_employee(message: types.Message):
     removed = employees.pop(idx)
     await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
-# --- Команда /set_schedule_for (АДМИНСКАЯ) ---
+# --- Команда /set_schedule_for (АДМИНСКАЯ) для установки расписания для конкретного сотрудника ---
 @dp.message_handler(commands=['set_schedule_for'])
 async def set_schedule_for(message: types.Message):
     if not admin_only(message):
@@ -260,7 +276,7 @@ async def edit_schedule(message: types.Message):
     if not admin_only(message):
         await message.answer("Access denied")
         return
-    await message.answer("Для редактирования графика используйте команду /set_schedule_for.\nПример: /set_schedule_for 1 14:00-22:00", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Для редактирования расписания используйте команду /set_schedule_for.\nПример: /set_schedule_for 1 14:00-22:00", reply_markup=ReplyKeyboardRemove())
 
 # --- Команды отчетности (АДМИНСКИЕ) ---
 @dp.message_handler(commands=['daily_report'])
