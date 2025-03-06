@@ -54,7 +54,7 @@ employees = [
 # Флаги для редактирования списка сотрудников
 pending_employee_edit = False
 
-# Функция геолокации оставлена (в текущей версии не используется)
+# Функция геолокации оставлена (не используется в данной версии)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     R = 6371000
     phi1 = math.radians(lat)
@@ -65,11 +65,10 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Главное меню (возвращается после выполнения действий)
-main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-main_menu.add(KeyboardButton('✅ Я пришёл'), KeyboardButton('🏁 Я ушёл'))
-main_menu.add(KeyboardButton('📊 Моя статистика'))
-main_menu.add(KeyboardButton('🕒 Установить график'))
+# Новое главное меню (с эмодзи) – используется для возврата, если потребуется, но теперь после отметки мы убираем клавиатуру.
+default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
+default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
 
 # Функция проверки доступа: разрешаем команды от ALLOWED_USER_ID и ADMIN_CHAT_ID
 def check_access(message: types.Message) -> bool:
@@ -112,9 +111,10 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
+    # Отправляем сообщение без прикрепленной клавиатуры – кнопки удаляются
     await bot.send_message(callback_query.from_user.id,
                            f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
-                           reply_markup=main_menu)
+                           reply_markup=ReplyKeyboardRemove())
     await bot.send_message(ADMIN_CHAT_ID,
                            f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
     await bot.answer_callback_query(callback_query.id)
@@ -131,7 +131,7 @@ async def attend_left_handler(callback_query: types.CallbackQuery):
         logging.error(f"Error logging left: {e}")
     await bot.send_message(callback_query.from_user.id,
                            f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
-                           reply_markup=main_menu)
+                           reply_markup=ReplyKeyboardRemove())
     await bot.send_message(ADMIN_CHAT_ID,
                            f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
     await bot.answer_callback_query(callback_query.id)
@@ -155,7 +155,7 @@ async def handle_employee_edit(message: types.Message):
         return
     employees = new_list
     pending_employee_edit = False
-    await message.answer(f"Список сотрудников обновлён: {', '.join(employees)}", reply_markup=main_menu)
+    await message.answer(f"Список сотрудников обновлён: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
 # --- Команда /delete_employee для удаления сотрудника ---
 @dp.message_handler(commands=['delete_employee'])
@@ -176,7 +176,7 @@ async def delete_employee(message: types.Message):
         await message.answer("Сотрудник с таким номером не найден.")
         return
     removed = employees.pop(idx)
-    await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=main_menu)
+    await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
 # --- Команда /search для поиска записей по employee_id ---
 @dp.message_handler(commands=['search'])
@@ -227,7 +227,7 @@ async def edit_schedule(message: types.Message):
     else:
         msg = "У вас не установлен график.\n"
     msg += "Введите новый график в формате HH:MM-HH:MM (например, 09:00-17:00)"
-    await message.answer(msg)
+    await message.answer(msg, reply_markup=ReplyKeyboardRemove())
 
 # --- Обработка ввода расписания ---
 @dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
@@ -244,10 +244,10 @@ async def schedule_input(message: types.Message):
         datetime.datetime.strptime(start_str, '%H:%M')
         datetime.datetime.strptime(end_str, '%H:%M')
         set_schedule(message.from_user.id, start_str, end_str)
-        await message.answer(f"✅ График установлен: {start_str} - {end_str}")
+        await message.answer(f"✅ График установлен: {start_str} - {end_str}", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
         logging.error(f"Error setting schedule: {e}")
-        await message.answer("Ошибка! Введите время в формате HH:MM-HH:MM (например, 14:00-22:00)")
+        await message.answer("Ошибка! Введите время в формате HH:MM-HH:MM (например, 14:00-22:00)", reply_markup=ReplyKeyboardRemove())
 
 # --- Команды отчетности ---
 @dp.message_handler(commands=['daily_report'])
@@ -479,7 +479,7 @@ async def monthly_cleanup():
                 writer.writerow(rec)
             csv_data = csv_output.getvalue()
             csv_output.close()
-            # Отправляем отчёты администратору
+            # Пытаемся отправить отчёты
             await bot.send_document(ADMIN_CHAT_ID,
                                     types.InputFile(io.BytesIO(txt_content.encode('utf-8')), filename="monthly_report.txt"))
             await bot.send_document(ADMIN_CHAT_ID,
@@ -493,7 +493,7 @@ async def monthly_cleanup():
 
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
-# Ежемесячная очистка: запуск каждый 1‑й день месяца в 00:00 по Tashkента
+# Ежемесячная очистка: каждый 1-й день месяца в 00:00 по Tashkента
 scheduler.add_job(monthly_cleanup, 'cron', day=1, hour=0, minute=0, timezone=tz)
 scheduler.start()
 
