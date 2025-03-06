@@ -35,12 +35,12 @@ bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
 # Разделяем переменные:
-ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))  # ID общего аккаунта (сотрудники)
+ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))  # ID для сотрудников (разрешённый пользователь)
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))        # ID администратора (админские команды и отчёты)
 
 tz = pytz.timezone('Asia/Tashkent')
 
-# Дефолтный список сотрудников (7 сотрудников) с эмодзи
+# Дефолтный список сотрудников (7 сотрудников) – с эмодзи
 employees = [
     "👤 Сотрудник 1",
     "👤 Сотрудник 2",
@@ -54,7 +54,7 @@ employees = [
 # Флаг для редактирования списка сотрудников
 pending_employee_edit = False
 
-# Функция геолокации оставлена (не используется в данной версии)
+# Функция геолокации оставлена (в данной версии не используется)
 def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> float:
     R = 6371000
     phi1 = math.radians(lat)
@@ -65,8 +65,7 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Главное меню (для возврата к выбору)
-# Теперь в главном меню кнопки украшены эмодзи и отражают действия
+# Новое меню по умолчанию – оно больше не используется для отметок, так как после отметки клавиатура удаляется
 default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
 default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
@@ -75,7 +74,7 @@ default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("�
 def check_access(message: types.Message) -> bool:
     return message.from_user.id in (ALLOWED_USER_ID, ADMIN_CHAT_ID)
 
-# Функция проверки, что команда админская (только для ADMIN_CHAT_ID)
+# Функция проверки для админских команд – только ADMIN_CHAT_ID
 def admin_only(message: types.Message) -> bool:
     return message.from_user.id == ADMIN_CHAT_ID
 
@@ -97,9 +96,10 @@ async def employee_selection_handler(callback_query: types.CallbackQuery):
     index = int(callback_query.data.split("_")[1])
     employee_name = employees[index]
     keyboard = InlineKeyboardMarkup(row_width=2)
+    # Используем эмодзи для кнопок
     keyboard.add(
-        InlineKeyboardButton("Приход", callback_data=f"attend_arrived_{index}"),
-        InlineKeyboardButton("Уход", callback_data=f"attend_left_{index}")
+        InlineKeyboardButton("🔥 Приход", callback_data=f"attend_arrived_{index}"),
+        InlineKeyboardButton("🌓 Уход", callback_data=f"attend_left_{index}")
     )
     await bot.send_message(callback_query.from_user.id,
                            f"Вы выбрали сотрудника: {employee_name}\nВыберите действие:",
@@ -116,12 +116,12 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # После отметки отправляем сообщение без клавиатуры – кнопки исчезают, и сотруднику нужно заново вызвать /start
+    # После отметки отправляем сообщение без клавиатуры – для следующего действия сотруднику нужно заново вызвать /start
     await bot.send_message(callback_query.from_user.id,
-                           f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
+                           f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
                            reply_markup=ReplyKeyboardRemove())
     await bot.send_message(ADMIN_CHAT_ID,
-                           f"Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
+                           f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
     await bot.answer_callback_query(callback_query.id)
 
 # --- Обработка отметки "Уход" ---
@@ -135,10 +135,10 @@ async def attend_left_handler(callback_query: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Error logging left: {e}")
     await bot.send_message(callback_query.from_user.id,
-                           f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
+                           f"🌓 Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
                            reply_markup=ReplyKeyboardRemove())
     await bot.send_message(ADMIN_CHAT_ID,
-                           f"Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
+                           f"🌓 Уход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
     await bot.answer_callback_query(callback_query.id)
 
 # --- Команда /edit_employees (АДМИНСКАЯ) ---
@@ -154,14 +154,13 @@ async def edit_employees(message: types.Message):
 @dp.message_handler(lambda message: pending_employee_edit and admin_only(message))
 async def handle_employee_edit(message: types.Message):
     global employees, pending_employee_edit
-    # Если имя не начинается с эмодзи "👤", добавляем его автоматически
     new_list = []
     for name in message.text.split(","):
         name = name.strip()
         if name and not name.startswith("👤"):
             name = "👤 " + name
         elif name:
-            name = name  # если уже есть эмодзи, оставить как есть
+            name = name
         new_list.append(name)
     if not new_list:
         await message.answer("Список пуст. Попробуйте еще раз.")
@@ -190,6 +189,33 @@ async def delete_employee(message: types.Message):
         return
     removed = employees.pop(idx)
     await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
+
+# --- Команда /set_schedule_for (АДМИНСКАЯ) ---
+@dp.message_handler(commands=['set_schedule_for'])
+async def set_schedule_for(message: types.Message):
+    if not admin_only(message):
+        await message.answer("Access denied")
+        return
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("Используйте: /set_schedule_for <employee_number> <start>-<end>\nНапример: /set_schedule_for 1 14:00-22:00")
+        return
+    try:
+        employee_num = int(parts[1])
+        schedule_str = parts[2]
+        if '-' not in schedule_str:
+            raise ValueError
+        start_str, end_str = schedule_str.split('-')
+        start_str = start_str.strip()
+        end_str = end_str.strip()
+        datetime.datetime.strptime(start_str, '%H:%M')
+        datetime.datetime.strptime(end_str, '%H:%M')
+        # Сохраняем расписание для сотрудника с номером employee_num
+        set_schedule(employee_num, start_str, end_str)
+        await message.answer(f"График для сотрудника {employee_num} установлен: {start_str} - {end_str}", reply_markup=ReplyKeyboardRemove())
+    except Exception as e:
+        logging.error(f"Error in set_schedule_for: {e}")
+        await message.answer("Ошибка! Используйте формат: /set_schedule_for <employee_number> <start>-<end>\nНапример: /set_schedule_for 1 14:00-22:00", reply_markup=ReplyKeyboardRemove())
 
 # --- Команда /search (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['search'])
@@ -234,33 +260,7 @@ async def edit_schedule(message: types.Message):
     if not admin_only(message):
         await message.answer("Access denied")
         return
-    current = get_schedule(message.from_user.id)
-    if current:
-        msg = f"Ваш текущий график: {current[0]} - {current[1]}\n"
-    else:
-        msg = "У вас не установлен график.\n"
-    msg += "Введите новый график в формате HH:MM-HH:MM (например, 09:00-17:00)"
-    await message.answer(msg, reply_markup=ReplyKeyboardRemove())
-
-# --- Обработка ввода расписания ---
-@dp.message_handler(lambda message: '-' in message.text and ':' in message.text)
-async def schedule_input(message: types.Message):
-    if not admin_only(message):
-        await message.answer("Access denied")
-        return
-    try:
-        parts = message.text.split('-')
-        if len(parts) != 2:
-            raise ValueError("Неверный формат")
-        start_str = parts[0].strip()
-        end_str = parts[1].strip()
-        datetime.datetime.strptime(start_str, '%H:%M')
-        datetime.datetime.strptime(end_str, '%H:%M')
-        set_schedule(message.from_user.id, start_str, end_str)
-        await message.answer(f"✅ График установлен: {start_str} - {end_str}", reply_markup=ReplyKeyboardRemove())
-    except Exception as e:
-        logging.error(f"Error setting schedule: {e}")
-        await message.answer("Ошибка! Введите время в формате HH:MM-HH:MM (например, 14:00-22:00)", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Для редактирования графика используйте команду /set_schedule_for.\nПример: /set_schedule_for 1 14:00-22:00", reply_markup=ReplyKeyboardRemove())
 
 # --- Команды отчетности (АДМИНСКИЕ) ---
 @dp.message_handler(commands=['daily_report'])
@@ -444,7 +444,7 @@ async def process_manage_access(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "edit_schedules")
 async def process_edit_schedules(callback_query: types.CallbackQuery):
-    await bot.send_message(ADMIN_CHAT_ID, "Чтобы редактировать расписания, используйте команду /edit_schedule")
+    await bot.send_message(ADMIN_CHAT_ID, "Для редактирования расписаний используйте команду /set_schedule_for")
     await bot.answer_callback_query(callback_query.id)
 
 # --- Напоминания по расписанию ---
@@ -452,7 +452,7 @@ async def check_shift_reminders():
     schedules = get_all_schedules()
     now = datetime.datetime.now(tz)
     for sch in schedules:
-        user_id, start_time, end_time = sch
+        employee_id, start_time, end_time = sch
         try:
             start_dt = datetime.datetime.strptime(start_time, '%H:%M')
             end_dt = datetime.datetime.strptime(end_time, '%H:%M')
@@ -464,9 +464,9 @@ async def check_shift_reminders():
         reminder_start = start_dt - datetime.timedelta(minutes=15)
         reminder_end = end_dt - datetime.timedelta(minutes=10)
         if reminder_start <= now < reminder_start + datetime.timedelta(minutes=1):
-            await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена начинается в {start_time}. Не забудьте отметить приход!")
+            await bot.send_message(employee_id, f"⏰ Напоминание: Ваша смена начинается в {start_time}. Не забудьте отметить приход!")
         if reminder_end <= now < reminder_end + datetime.timedelta(minutes=1):
-            await bot.send_message(user_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
+            await bot.send_message(employee_id, f"⏰ Напоминание: Ваша смена заканчивается в {end_time}. Не забудьте отметить уход!")
 
 # --- Ежемесячная очистка базы ---
 async def monthly_cleanup():
