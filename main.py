@@ -52,7 +52,7 @@ employees = [
     "👤 Сотрудник 7"
 ]
 
-# Флаги для редактирования списка сотрудников
+# Флаг для редактирования списка сотрудников
 pending_employee_edit = False
 
 # Функция геолокации оставлена (не используется в данной версии)
@@ -66,7 +66,8 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Главное меню для сотрудников – после отметки клавиатура удаляется, чтобы следующий сотрудник заново вызывал /start.
+# Меню по умолчанию не используется для отметки – после отметки клавиатура удаляется
+# (сотруднику нужно заново вызвать /start)
 default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
 default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
@@ -118,21 +119,21 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # Проверка расписания для данного сотрудника (если установлено)
+    # Проверяем расписание для данного сотрудника (если установлено)
     schedule = get_schedule(index + 1)
     if schedule:
-        scheduled_start = schedule[0]  # строка "HH:MM"
+        scheduled_start = schedule[0]  # формат "HH:MM"
         try:
             scheduled_start_dt = datetime.datetime.strptime(f"{now.date()} {scheduled_start}", "%Y-%m-%d %H:%M")
             if now > scheduled_start_dt:
                 delay = now - scheduled_start_dt
                 tardy_minutes = int(delay.total_seconds() / 60)
                 tardy_message = f"\n⚠️ Опоздание: {tardy_minutes} мин."
-                # Отправляем уведомление об опоздании администратору (будет также включено в отдельный отчет в /allstats)
                 await bot.send_message(ADMIN_CHAT_ID,
                                        f"⚠️ Сотрудник {employee_name} опоздал на {tardy_minutes} мин. (запланировано: {scheduled_start}, пришёл: {now.strftime('%H:%M')})")
+            # Если пришёл раньше или точно вовремя, ничего не добавляем
         except Exception as e:
-            logging.error(f"Error processing schedule for tardiness: {e}")
+            logging.error(f"Error processing tardiness for {employee_name}: {e}")
     await bot.send_message(callback_query.from_user.id,
                            f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}{tardy_message}",
                            reply_markup=ReplyKeyboardRemove())
@@ -449,7 +450,6 @@ async def all_stats(message: types.Message):
     await bot.send_photo(ADMIN_CHAT_ID, photo=types.InputFile(img_buffer, filename="stats.png"))
     # --- Дополнительно: формируем файлы для опоздавших ---
     tardy_records = []
-    # Для каждого "прихода" вычисляем опоздание по расписанию, если оно установлено
     for rec in records:
         if rec[3] == "arrived":
             try:
@@ -468,7 +468,6 @@ async def all_stats(message: types.Message):
                         tardy_records.append((rec[0], rec[1], rec[2], "arrived (опоздание)", local_time.strftime('%Y-%m-%d %H:%M:%S'), scheduled_start, tardiness_minutes))
                 except Exception as e:
                     logging.error(f"Error processing tardiness for record {rec}: {e}")
-    # Если есть опоздавшие, создаём файлы для них
     if tardy_records:
         # TXT-файл для опоздавших
         txt_lines = ["employee_id, username, employee_name, action, arrival_time, scheduled_start, tardiness_minutes"]
@@ -484,7 +483,6 @@ async def all_stats(message: types.Message):
         tardy_xlsx = io.BytesIO()
         wb_tardy.save(tardy_xlsx)
         tardy_xlsx.seek(0)
-        # Отправляем файлы для опоздавших
         await bot.send_document(
             ADMIN_CHAT_ID,
             types.InputFile(io.BytesIO(tardy_txt_content.encode('utf-8')), filename="tardy_report.txt")
