@@ -66,8 +66,8 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Меню по умолчанию не используется для отметки – после отметки клавиатура удаляется
-# (сотруднику нужно заново вызвать /start)
+# Меню, которое отображается сотруднику после выбора (но после отметки клавиатура удаляется)
+# Для данного варианта мы не используем его – сотруднику нужно заново вызывать /start
 default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
 default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
@@ -86,7 +86,6 @@ async def start(message: types.Message):
     if not check_access(message):
         await message.answer("Access denied")
         return
-    # Отображаем список сотрудников через inline-клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=2)
     for i, emp in enumerate(employees):
         keyboard.add(InlineKeyboardButton(emp, callback_data=f"employee_{i}"))
@@ -98,7 +97,6 @@ async def employee_selection_handler(callback_query: types.CallbackQuery):
     index = int(callback_query.data.split("_")[1])
     employee_name = employees[index]
     keyboard = InlineKeyboardMarkup(row_width=2)
-    # Кнопки с эмодзи для действия
     keyboard.add(
         InlineKeyboardButton("🔥 Приход", callback_data=f"attend_arrived_{index}"),
         InlineKeyboardButton("🌓 Уход", callback_data=f"attend_left_{index}")
@@ -119,7 +117,6 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # Проверяем расписание для данного сотрудника (если установлено)
     schedule = get_schedule(index + 1)
     if schedule:
         scheduled_start = schedule[0]  # формат "HH:MM"
@@ -131,7 +128,6 @@ async def attend_arrived_handler(callback_query: types.CallbackQuery):
                 tardy_message = f"\n⚠️ Опоздание: {tardy_minutes} мин."
                 await bot.send_message(ADMIN_CHAT_ID,
                                        f"⚠️ Сотрудник {employee_name} опоздал на {tardy_minutes} мин. (запланировано: {scheduled_start}, пришёл: {now.strftime('%H:%M')})")
-            # Если пришёл раньше или точно вовремя, ничего не добавляем
         except Exception as e:
             logging.error(f"Error processing tardiness for {employee_name}: {e}")
     await bot.send_message(callback_query.from_user.id,
@@ -412,7 +408,6 @@ async def all_stats(message: types.Message):
     all_xlsx = io.BytesIO()
     wb_all.save(all_xlsx)
     all_xlsx.seek(0)
-    # Отправляем CSV и Excel файлы, а также график
     await bot.send_document(
         ADMIN_CHAT_ID,
         types.InputFile(io.BytesIO(output.getvalue().encode('utf-8')), filename="allstats.csv")
@@ -450,14 +445,11 @@ async def all_stats(message: types.Message):
     await bot.send_photo(ADMIN_CHAT_ID, photo=types.InputFile(img_buffer, filename="stats.png"))
     # --- Дополнительно: формируем файлы для опоздавших ---
     tardy_records = []
-    for rec in records:
+    # Используем adjusted_records для обработки опоздания
+    for rec in adjusted_records:
         if rec[3] == "arrived":
-            try:
-                utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
-            except Exception:
-                utc_time = datetime.datetime.fromisoformat(rec[4])
-            utc_time = utc_time.replace(tzinfo=pytz.utc)
-            local_time = utc_time.astimezone(tz)
+            # rec[4] уже локальное время
+            local_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
             schedule = get_schedule(rec[0])
             if schedule:
                 scheduled_start = schedule[0]
@@ -465,7 +457,7 @@ async def all_stats(message: types.Message):
                     scheduled_start_dt = datetime.datetime.strptime(f"{local_time.date()} {scheduled_start}", "%Y-%m-%d %H:%M")
                     if local_time > scheduled_start_dt:
                         tardiness_minutes = int((local_time - scheduled_start_dt).total_seconds() / 60)
-                        tardy_records.append((rec[0], rec[1], rec[2], "arrived (опоздание)", local_time.strftime('%Y-%m-%d %H:%M:%S'), scheduled_start, tardiness_minutes))
+                        tardy_records.append((rec[0], rec[1], rec[2], "arrived (опоздание)", rec[4], scheduled_start, tardiness_minutes))
                 except Exception as e:
                     logging.error(f"Error processing tardiness for record {rec}: {e}")
     if tardy_records:
@@ -580,12 +572,10 @@ async def monthly_cleanup():
                 writer.writerow(rec)
             csv_data = csv_output.getvalue()
             csv_output.close()
-            # Пытаемся отправить отчёты
             await bot.send_document(ADMIN_CHAT_ID,
                                     types.InputFile(io.BytesIO(txt_content.encode('utf-8')), filename="monthly_report.txt"))
             await bot.send_document(ADMIN_CHAT_ID,
                                     types.InputFile(io.BytesIO(csv_data.encode('utf-8')), filename="monthly_report.csv"))
-            # Если отчёты успешно отправлены, удаляем устаревшие записи
             cursor.execute("DELETE FROM attendance WHERE timestamp < ?", (cutoff_str,))
             conn.commit()
         conn.close()
@@ -594,7 +584,6 @@ async def monthly_cleanup():
 
 scheduler = AsyncIOScheduler()
 scheduler.add_job(check_shift_reminders, 'interval', minutes=1)
-# Ежемесячная очистка: каждый 1-й день месяца в 00:00 по Tashkента
 scheduler.add_job(monthly_cleanup, 'cron', day=1, hour=0, minute=0, timezone=tz)
 scheduler.start()
 
