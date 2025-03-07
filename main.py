@@ -17,6 +17,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import pytz
+from openpyxl import Workbook
 
 # Для фонового планирования напоминаний и ежемесячной очистки
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -35,7 +36,7 @@ bot = Bot(token=os.getenv('BOT_TOKEN'))
 dp = Dispatcher(bot)
 
 # Разделяем переменные:
-ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))  # ID для сотрудников (разрешённый пользователь)
+ALLOWED_USER_ID = int(os.getenv('ALLOWED_USER_ID'))  # ID для сотрудников (общий доступ)
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))        # ID администратора (админские команды и отчёты)
 
 tz = pytz.timezone('Asia/Tashkent')
@@ -51,7 +52,7 @@ employees = [
     "👤 Сотрудник 7"
 ]
 
-# Флаг для редактирования списка сотрудников
+# Флаги для редактирования списка сотрудников
 pending_employee_edit = False
 
 # Функция геолокации оставлена (не используется в данной версии)
@@ -65,8 +66,7 @@ def calculate_distance(lat: float, lon: float, lat2: float, lon2: float) -> floa
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Новое главное меню (для возврата к выбору действий) – после отметки клавиатура удаляется,
-# и для следующего действия сотруднику нужно заново вызвать /start.
+# Главное меню для сотрудников – после отметки клавиатура удаляется, чтобы следующий сотрудник заново вызывал /start.
 default_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
 default_menu.add(KeyboardButton("🚀 Отметить приход"), KeyboardButton("🌙 Отметить уход"))
 default_menu.add(KeyboardButton("📈 Статистика"), KeyboardButton("⏰ Установить график"))
@@ -97,7 +97,7 @@ async def employee_selection_handler(callback_query: types.CallbackQuery):
     index = int(callback_query.data.split("_")[1])
     employee_name = employees[index]
     keyboard = InlineKeyboardMarkup(row_width=2)
-    # Используем эмодзи для кнопок
+    # Кнопки с эмодзи для действия
     keyboard.add(
         InlineKeyboardButton("🔥 Приход", callback_data=f"attend_arrived_{index}"),
         InlineKeyboardButton("🌓 Уход", callback_data=f"attend_left_{index}")
@@ -107,22 +107,37 @@ async def employee_selection_handler(callback_query: types.CallbackQuery):
                            reply_markup=keyboard)
     await bot.answer_callback_query(callback_query.id)
 
-# --- Обработка отметки "Приход" ---
+# --- Обработка отметки "Приход" с проверкой опоздания ---
 @dp.callback_query_handler(lambda c: c.data.startswith("attend_arrived_"))
 async def attend_arrived_handler(callback_query: types.CallbackQuery):
     index = int(callback_query.data.split("_")[-1])
     employee_name = employees[index]
     now = datetime.datetime.now(tz)
+    tardy_message = ""
     try:
         log_action(index + 1, "", employee_name, "arrived")
     except Exception as e:
         logging.error(f"Error logging arrived: {e}")
-    # После отметки отправляем сообщение без клавиатуры
+    # Проверка расписания для данного сотрудника (если установлено)
+    schedule = get_schedule(index + 1)
+    if schedule:
+        scheduled_start = schedule[0]  # строка "HH:MM"
+        try:
+            scheduled_start_dt = datetime.datetime.strptime(f"{now.date()} {scheduled_start}", "%Y-%m-%d %H:%M")
+            if now > scheduled_start_dt:
+                delay = now - scheduled_start_dt
+                tardy_minutes = int(delay.total_seconds() / 60)
+                tardy_message = f"\n⚠️ Опоздание: {tardy_minutes} мин."
+                # Отправляем уведомление об опоздании администратору (будет также включено в отдельный отчет в /allstats)
+                await bot.send_message(ADMIN_CHAT_ID,
+                                       f"⚠️ Сотрудник {employee_name} опоздал на {tardy_minutes} мин. (запланировано: {scheduled_start}, пришёл: {now.strftime('%H:%M')})")
+        except Exception as e:
+            logging.error(f"Error processing schedule for tardiness: {e}")
     await bot.send_message(callback_query.from_user.id,
-                           f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}",
+                           f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}{tardy_message}",
                            reply_markup=ReplyKeyboardRemove())
     await bot.send_message(ADMIN_CHAT_ID,
-                           f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}")
+                           f"🔥 Приход сотрудника {employee_name} зафиксирован в {now.strftime('%Y-%m-%d %H:%M:%S')}{tardy_message}")
     await bot.answer_callback_query(callback_query.id)
 
 # --- Обработка отметки "Уход" ---
@@ -160,8 +175,6 @@ async def handle_employee_edit(message: types.Message):
         name = name.strip()
         if name and not name.startswith("👤"):
             name = "👤 " + name
-        elif name:
-            name = name
         new_list.append(name)
     if not new_list:
         await message.answer("Список пуст. Попробуйте еще раз.")
@@ -170,7 +183,7 @@ async def handle_employee_edit(message: types.Message):
     pending_employee_edit = False
     await message.answer(f"Список сотрудников обновлён: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
-# --- Новая команда /add_employee (АДМИНСКАЯ) для добавления сотрудника ---
+# --- Команда /add_employee (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['add_employee'])
 async def add_employee(message: types.Message):
     if not admin_only(message):
@@ -206,7 +219,7 @@ async def delete_employee(message: types.Message):
     removed = employees.pop(idx)
     await message.answer(f"Сотрудник '{removed}' удалён.\nТекущий список: {', '.join(employees)}", reply_markup=ReplyKeyboardRemove())
 
-# --- Команда /set_schedule_for (АДМИНСКАЯ) для установки расписания для конкретного сотрудника ---
+# --- Команда /set_schedule_for (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['set_schedule_for'])
 async def set_schedule_for(message: types.Message):
     if not admin_only(message):
@@ -226,7 +239,6 @@ async def set_schedule_for(message: types.Message):
         end_str = end_str.strip()
         datetime.datetime.strptime(start_str, '%H:%M')
         datetime.datetime.strptime(end_str, '%H:%M')
-        # Сохраняем расписание для сотрудника с номером employee_num
         set_schedule(employee_num, start_str, end_str)
         await message.answer(f"График для сотрудника {employee_num} установлен: {start_str} - {end_str}", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
@@ -383,12 +395,32 @@ async def all_stats(message: types.Message):
         utc_time = utc_time.replace(tzinfo=pytz.utc)
         adjusted_time = utc_time.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S')
         adjusted_records.append((rec[0], rec[1], rec[2], rec[3], adjusted_time))
+    # Генерируем CSV-файл для всех записей
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["employee_id", "username", "employee_name", "action", "timestamp"])
     for rec in adjusted_records:
         writer.writerow(rec)
     output.seek(0)
+    # Генерируем Excel-файл для всех записей
+    wb_all = Workbook()
+    ws_all = wb_all.active
+    ws_all.append(["employee_id", "username", "employee_name", "action", "timestamp"])
+    for rec in adjusted_records:
+        ws_all.append(rec)
+    all_xlsx = io.BytesIO()
+    wb_all.save(all_xlsx)
+    all_xlsx.seek(0)
+    # Отправляем CSV и Excel файлы, а также график
+    await bot.send_document(
+        ADMIN_CHAT_ID,
+        types.InputFile(io.BytesIO(output.getvalue().encode('utf-8')), filename="allstats.csv")
+    )
+    await bot.send_document(
+        ADMIN_CHAT_ID,
+        types.InputFile(all_xlsx, filename="allstats.xlsx")
+    )
+    # Генерируем график
     dates = {}
     for rec in adjusted_records:
         date_only = rec[4].split()[0]
@@ -414,11 +446,53 @@ async def all_stats(message: types.Message):
     plt.savefig(img_buffer, format='png')
     plt.close()
     img_buffer.seek(0)
-    await bot.send_document(
-        ADMIN_CHAT_ID,
-        types.InputFile(io.BytesIO(output.getvalue().encode('utf-8')), filename="allstats.csv")
-    )
     await bot.send_photo(ADMIN_CHAT_ID, photo=types.InputFile(img_buffer, filename="stats.png"))
+    # --- Дополнительно: формируем файлы для опоздавших ---
+    tardy_records = []
+    # Для каждого "прихода" вычисляем опоздание по расписанию, если оно установлено
+    for rec in records:
+        if rec[3] == "arrived":
+            try:
+                utc_time = datetime.datetime.strptime(rec[4], '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                utc_time = datetime.datetime.fromisoformat(rec[4])
+            utc_time = utc_time.replace(tzinfo=pytz.utc)
+            local_time = utc_time.astimezone(tz)
+            schedule = get_schedule(rec[0])
+            if schedule:
+                scheduled_start = schedule[0]
+                try:
+                    scheduled_start_dt = datetime.datetime.strptime(f"{local_time.date()} {scheduled_start}", "%Y-%m-%d %H:%M")
+                    if local_time > scheduled_start_dt:
+                        tardiness_minutes = int((local_time - scheduled_start_dt).total_seconds() / 60)
+                        tardy_records.append((rec[0], rec[1], rec[2], "arrived (опоздание)", local_time.strftime('%Y-%m-%d %H:%M:%S'), scheduled_start, tardiness_minutes))
+                except Exception as e:
+                    logging.error(f"Error processing tardiness for record {rec}: {e}")
+    # Если есть опоздавшие, создаём файлы для них
+    if tardy_records:
+        # TXT-файл для опоздавших
+        txt_lines = ["employee_id, username, employee_name, action, arrival_time, scheduled_start, tardiness_minutes"]
+        for rec in tardy_records:
+            txt_lines.append(", ".join(str(x) for x in rec))
+        tardy_txt_content = "\n".join(txt_lines)
+        # Excel-файл для опоздавших
+        wb_tardy = Workbook()
+        ws_tardy = wb_tardy.active
+        ws_tardy.append(["employee_id", "username", "employee_name", "action", "arrival_time", "scheduled_start", "tardiness_minutes"])
+        for rec in tardy_records:
+            ws_tardy.append(rec)
+        tardy_xlsx = io.BytesIO()
+        wb_tardy.save(tardy_xlsx)
+        tardy_xlsx.seek(0)
+        # Отправляем файлы для опоздавших
+        await bot.send_document(
+            ADMIN_CHAT_ID,
+            types.InputFile(io.BytesIO(tardy_txt_content.encode('utf-8')), filename="tardy_report.txt")
+        )
+        await bot.send_document(
+            ADMIN_CHAT_ID,
+            types.InputFile(tardy_xlsx, filename="tardy_report.xlsx")
+        )
 
 @dp.message_handler(commands=['send_summary'])
 async def send_summary(message: types.Message):
@@ -427,7 +501,7 @@ async def send_summary(message: types.Message):
         return
     await message.answer("Функция отправки отчётов на email ещё не реализована.")
 
-# --- Админ-панель ---
+# --- Админ-панель (АДМИНСКАЯ) ---
 @dp.message_handler(commands=['admin_panel'])
 async def admin_panel(message: types.Message):
     if not admin_only(message):
