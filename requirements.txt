@@ -1,1 +1,5 @@
-aiogram>=2.0,<3.0
+pip>=21.0
+aiogram==2.25.1
+aiohttp==3.8.1
+yarl==1.8.2
+multidict==5.4.0
