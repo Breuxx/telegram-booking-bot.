@@ -5,7 +5,7 @@ from aiogram.utils import executor
 from collections import defaultdict
 import os
 
-API_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TOKEN_HERE")
+API_TOKEN = os.getenv("BOT_TOKEN", "8135989382:AAHCoVx0CM0hxT1XDwHkakjrOjh4XYaMDbQ")
 
 # Логирование
 logging.basicConfig(level=logging.INFO)
