@@ -6,7 +6,7 @@ from collections import defaultdict
 import os
 
 logging.basicConfig(level=logging.INFO)
-API_TOKEN = os.getenv("BOT_TOKEN", "7654501983:AAHuFHxXlqeGnmco-r-RpTwXptVq-28flKA")
+API_TOKEN = os.getenv("BOT_TOKEN", "7654501983:AAEP-cvMr74HZm2Lq8Ebp8yDZuXhaSvPlzs")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
