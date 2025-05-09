@@ -5,7 +5,7 @@ from aiogram.utils import executor
 from collections import defaultdict
 import os
 
-API_TOKEN = os.getenv("BOT_TOKEN", "8135989382:AAHCoVx0CM0hxT1XDwHkakjrOjh4XYaMDbQ")
+API_TOKEN = os.getenv("BOT_TOKEN", "7654501983:AAGi8L3LHBck1tlu4FVvRDeUfq0FgKzCWiA")
 
 # Логирование
 logging.basicConfig(level=logging.INFO)
@@ -152,4 +152,4 @@ async def game_action(m: types.Message):
 
 # ——— Запуск Long Polling ———
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True)p
