@@ -1,0 +1,8 @@
+{
+  "devPackages": [
+    "gcc",
+    "pkg-config",
+    "openssl.dev",
+    "libffi.dev"
+  ]
+}
