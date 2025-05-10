@@ -1,2 +1,2 @@
-aiogram==3.1.0b7
+aiogram==3.1.0
 numpy>=1.20.0
