@@ -30,7 +30,7 @@ def build_kb(rows):
 # —————————————————————————————————————————————
 RANKS = ['6','7','8','9','J','Q','K','A']
 SUITS = ['♠','♥','♦','♣']
-FULL = [r + s for r in RANKS for s in SUITS]  # 24 карты
+FULL = [r+s for r in RANKS for s in SUITS]  # 24 карты
 
 def parse_card(c): return c[:-1], c[-1]
 
@@ -47,66 +47,62 @@ def beats(att, dfn, trump):
 #           Оценка распределения руки оппонента
 # —————————————————————————————————————————————
 def estimate_opponent_distribution(state, trials=200):
-    """
-    Particle filter: строим вероятности карт в руках оппонента
-    на основании оставшихся в колоде карт и числа карт у оппонента.
-    """
     rem = [c for c in FULL if c not in state["gone"] and c not in state["my"]]
     counts = Counter()
     for _ in range(trials):
         sample = random.sample(rem, state["opp"])
-        for c in sample:
-            counts[c] += 1
+        counts.update(sample)
     total = sum(counts.values())
     if total == 0:
-        # равновероятно
         return {c: 1/len(rem) for c in rem}
     return {c: counts[c]/total for c in rem}
 
-def weighted_choice(population, weights, k):
-    """
-    Выбираем k элементов из population по весам weights
-    (может повторяться — используем replace=False, но при малых остатках можно True).
-    """
-    return list(np.random.choice(population, size=k, replace=False, p=weights))
+def weighted_choice(pop, weights, k):
+    return list(np.random.choice(pop, size=k, replace=False, p=weights))
 
 # —————————————————————————————————————————————
 #                AI-стратегии с учётом distrib
 # —————————————————————————————————————————————
 def mc_best_attack(state, trials=80):
     hand, opp, gone, trump = state["my"], state["opp"], state["gone"], state["trump"]
-    # оценить distribution оппонента
-    opp_dist = estimate_opponent_distribution(state, trials=200)
+    # оценка оппонента
+    opp_dist = estimate_opponent_distribution(state)
     rem = list(opp_dist.keys())
     probs = np.array([opp_dist[c] for c in rem])
-    probs = probs / probs.sum()
+    probs /= probs.sum()
     scores = Counter()
     for card in hand:
+        # избегаем тузов и козырей, если есть другие карты
+        r, s = parse_card(card)
+        penalty = 2 if r=='A' else 1 if s==trump else 0
         win = 0
         for _ in range(trials):
             opph = weighted_choice(rem, probs, opp)
             if not any(beats(card, parse_card(o), trump) for o in opph):
                 win += 1
-        scores[card] = win
+        scores[card] = win - penalty
     return max(scores, key=scores.get)
 
 def mc_best_defense(att, state, trials=80):
     hand, opp, gone, trump = state["my"], state["opp"], state["gone"], state["trump"]
-    opp_dist = estimate_opponent_distribution(state, trials=200)
+    opp_dist = estimate_opponent_distribution(state)
     rem = list(opp_dist.keys())
     probs = np.array([opp_dist[c] for c in rem])
-    probs = probs / probs.sum()
+    probs /= probs.sum()
     candidates = [c for c in hand if beats(att, parse_card(c), trump)]
     if not candidates:
         return None
     scores = Counter()
     for card in candidates:
+        r, s = parse_card(card)
+        penalty = 1 if s==trump else 0
         win = 0
         for _ in range(trials):
             opph = weighted_choice(rem, probs, opp)
+            # после защиты проверяем, может ли оппонент дальше подкинуть
             if not any(beats(card, parse_card(o), trump) for o in opph):
                 win += 1
-        scores[card] = win
+        scores[card] = win - penalty
     return max(scores, key=scores.get)
 
 def do_otb(state):
@@ -124,134 +120,122 @@ def kb_trump():    return build_kb([[s] for s in SUITS])
 def kb_cards(av):  return build_kb([av[i:i+4] for i in range(0,len(av),4)] + [["✅ Готово"]])
 def kb_start():    return build_kb([["Я","Соперник"]])
 def kb_actions():  return build_kb([["⚔️ walk","📊 stat"]])
-def kb_defense(av): 
-    rows = [av[i:i+4] for i in range(0,len(av),4)]
-    rows.append(["Не отбился"])
-    return build_kb(rows)
+def kb_defense(av):
+    # теперь только ваши карты, которые могут отбить, плюс "Не отбился"
+    return build_kb([av[i:i+4] for i in range(0,len(av),4)] + [["Не отбился"]])
 
 # —————————————————————————————————————————————
 #                   Сессии
 # —————————————————————————————————————————————
 sessions = defaultdict(lambda: {
-    "stage":"start","trump":None,
-    "available":[], "my":[],
-    "opp":0,"deck":0,"max":0,
-    "gone":set(),"last_att":None,
-    "pending_pickup":0
+    "stage":"start","trump":None,"available":[], "my":[],
+    "opp":0,"deck":0,"max":0,"gone":set(),
+    "last_att":None,"pending_pickup":0
 })
 
 # —————————————————————————————————————————————
 #                   Основной цикл
 # —————————————————————————————————————————————
 def main():
-    offset = None
+    offset=None
     while True:
         for upd in get_updates(offset):
-            offset = upd["update_id"] + 1
-            msg = upd.get("message")
-            if not msg or "text" not in msg:
-                continue
-            ch, t = msg["chat"]["id"], msg["text"].strip()
-            s = sessions[ch]
+            offset=upd["update_id"]+1
+            msg=upd.get("message")
+            if not msg or "text" not in msg: continue
+            ch, t=msg["chat"]["id"], msg["text"].strip()
+            s=sessions[ch]
 
             # 1) /start
             if t in ("/start","/init") or s["stage"]=="start":
                 s.update(stage="choose_trump", my=[], gone=set(),
                          pending_pickup=0, last_att=None)
-                send(ch, "Выберите козырь:", kb_trump())
+                send(ch,"Выберите козырь:", kb_trump())
                 continue
 
             # 2) выбор козыря
             if s["stage"]=="choose_trump" and t in SUITS:
-                s["trump"] = t
-                s["stage"] = "enter_cards"
-                s["available"] = FULL.copy()
-                s["my"] = []
-                send(ch, f"Козырь: {t}\nВыберите 6 карт:", kb_cards(s["available"]))
+                s["trump"]=t; s["stage"]="enter_cards"
+                s["available"]=FULL.copy(); s["my"]=[]
+                send(ch,f"Козырь: {t}\nВыберите 6 карт:", kb_cards(s["available"]))
                 continue
 
-            # 3) ввод карт
+            # 3) ввод 6 карт
             if s["stage"]=="enter_cards":
                 if t=="✅ Готово":
                     if len(s["my"])<6:
-                        send(ch, f"Нужно 6, выбрано {len(s['my'])}", kb_cards(s["available"]))
+                        send(ch,f"Нужно 6, выбрано {len(s['my'])}", kb_cards(s["available"]))
                     else:
-                        s["max"] = 6
-                        s["gone"] = set(s["my"])
+                        s["max"]=6; s["gone"]=set(s["my"])
                         s["stage"]="confirm_first"
-                        send(ch, "Кто ходит первым?", kb_start())
+                        send(ch,"Кто ходит первым?", kb_start())
                 elif t in s["available"]:
-                    s["my"].append(t)
-                    s["available"].remove(t)
-                    send(ch, f"Выбрано {len(s['my'])}/6", kb_cards(s["available"]))
+                    s["my"].append(t); s["available"].remove(t)
+                    send(ch,f"Выбрано {len(s['my'])}/6", kb_cards(s["available"]))
                 else:
-                    send(ch, "Нажмите карту или ✅ Готово.")
+                    send(ch,"Нажмите карту или ✅ Готово.")
                 continue
 
             # 4) первый ход
             if s["stage"]=="confirm_first" and t in ("Я","Соперник"):
-                s["turn"] = "me" if t=="Я" else "opp"
-                s["stage"] = "play"
-                s["opp"] = 6
-                s["deck"] = 12
-                send(ch, "Игра началась! Ваш ход:", kb_actions())
+                s["turn"]="me" if t=="Я" else "opp"
+                s["stage"]="play"; s["opp"]=6; s["deck"]=12
+                send(ch,"Игра началась! Ваш ход:", kb_actions())
                 continue
 
             # 5) play
             if s["stage"]=="play":
                 if t=="⚔️ walk":
-                    card = mc_best_attack(s)
-                    s["last_att"] = card
-                    s["my"].remove(card)
-                    s["gone"].add(card)
-                    s["stage"] = "await_def"
-                    defense_pool = [c for c in FULL if c not in s["gone"] and c not in s["my"]]
-                    send(ch, f"⚔️ Вы походили: {card}\nСоперник отбивается:", kb_defense(defense_pool))
+                    card=mc_best_attack(s)
+                    s["last_att"]=card
+                    s["my"].remove(card); s["gone"].add(card)
+                    s["stage"]="await_def"
+                    # клавиатура защиты: только ваши карты, которые бьют
+                    beaters=[c for c in s["my"] if beats(card, parse_card(c), s["trump"])]
+                    send(ch,f"⚔️ Вы ходите: {card}\nСоперник отбивается:", kb_defense(beaters))
                 elif t=="📊 stat":
-                    tm,opp = len(s["my"]), s["opp"]
-                    p = tm/(tm+opp)*100 if tm+opp>0 else 0
-                    send(ch, f"Шанс ≈ {p:.0f}% (у тебя {tm}, опп {opp}, deck {s['deck']})", kb_actions())
+                    tm,opp=len(s["my"]),s["opp"]
+                    p=tm/(tm+opp)*100 if tm+opp>0 else 0
+                    send(ch,f"Шанс ≈ {p:.0f}% (у тебя {tm}, опп {opp}, deck {s['deck']})", kb_actions())
                 else:
-                    send(ch, "Нажмите ⚔️ walk или 📊 stat.", kb_actions())
+                    send(ch,"Нажмите ⚔️ walk или 📊 stat.", kb_actions())
                 continue
 
             # 6) await_def
             if s["stage"]=="await_def":
                 if t=="Не отбился":
-                    res = do_otb(s)
+                    res=do_otb(s)
                     s["stage"]="pickup"
-                    send(ch, res + "\nВыберите карты для добора:", kb_cards(
+                    send(ch,res+"\nВыберите карты для добора:", kb_cards(
                         [c for c in FULL if c not in s["gone"] and c not in s["my"]]
                     ))
-                elif t in FULL and t not in s["gone"] and t not in s["my"]:
-                    s["gone"].add(t)
-                    send(ch, f"Соперник отбился {t}.")
-                    res = do_otb(s)
+                elif t in s["my"] and beats(s["last_att"], parse_card(t), s["trump"]):
+                    s["my"].remove(t); s["gone"].add(t)
+                    send(ch,f"Соперник отбился {t}.")
+                    res=do_otb(s)
                     s["stage"]="pickup"
-                    send(ch, res + "\nВыберите карты для добора:", kb_cards(
+                    send(ch,res+"\nВыберите карты для добора:", kb_cards(
                         [c for c in FULL if c not in s["gone"] and c not in s["my"]]
                     ))
                 else:
-                    send(ch, "Выберите карту защиты или «Не отбился».", kb_defense([]))
+                    send(ch,"Выберите карту защиты или «Не отбился».", kb_defense([]))
                 continue
 
             # 7) pickup
             if s["stage"]=="pickup":
                 if t=="✅ Готово":
-                    s["pending_pickup"] = 0
-                    s["stage"]="play"
-                    send(ch, "Продолжаем игру:", kb_actions())
+                    s["pending_pickup"]=0; s["stage"]="play"
+                    send(ch,"Продолжаем игру:", kb_actions())
                 elif t in s["available"] and s["pending_pickup"]>0:
-                    s["my"].append(t)
-                    s["available"].remove(t)
-                    s["pending_pickup"] -= 1
-                    send(ch, f"Добавлено {t}. Осталось взять {s['pending_pickup']}.", kb_cards(s["available"]))
+                    s["my"].append(t); s["available"].remove(t)
+                    s["pending_pickup"]-=1
+                    send(ch,f"Добавлено {t}. Осталось взять {s['pending_pickup']}.", kb_cards(s["available"]))
                 else:
-                    send(ch, "Нажмите карту или ✅ Готово.", kb_cards(s["available"]))
+                    send(ch,"Нажмите карту или ✅ Готово.", kb_cards(s["available"]))
                 continue
 
             # fallback
-            send(ch, "Введите /start для новой игры.")
+            send(ch,"Введите /start для новой игры.")
         time.sleep(1)
 
 if __name__=="__main__":
