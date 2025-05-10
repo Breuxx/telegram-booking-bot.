@@ -1,157 +1,161 @@
 #!/usr/bin/env python3
-import os
-import sys
-import time
-import requests
-from collections import defaultdict
+import os, time, requests
+from collections import defaultdict, Counter
+import numpy as np
 
 TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_ЗДЕСЬ")
-API_URL = f"https://api.telegram.org/bot{TOKEN}"
+API = f"https://api.telegram.org/bot{TOKEN}"
 
-# Сессии для каждого пользователя
+# Карты
+RANKS = ['6','7','8','9','J','Q','K','A']
+SUITS = ['♠','♥','♦','♣']
+FULL_DECK = [r + s for r in RANKS for s in SUITS]
+
+# Сессии
 sessions = defaultdict(lambda: {
-    "stage": "start",
-    "trump": None,
-    "my": [],
-    "opp": 0,
-    "deck": 0,
-    "max_hand": 0,
-    "unknown": 0
+    "stage":"start",
+    "trump":None,
+    "my":[],       # ваши известные карты
+    "opp":0,
+    "deck":0,
+    "max":0,
+    "gone":set(),  # сыгранные карты
 })
 
-# Логика «тренера» (коротко)
-RANKS = ['6','7','8','9','10','J','Q','K','A']
-SUITS = {'s':'♠','h':'♥','d':'♦','c':'♣'}
+def send(chat, text, keyboard=None):
+    data = {"chat_id":chat, "text":text, "parse_mode":"HTML"}
+    if keyboard:
+        data["reply_markup"] = keyboard
+    requests.post(API+"/sendMessage", json=data)
 
-def parse_card(card):
-    return card[:-1], card[-1]
+def get_updates(offset=None):
+    r = requests.get(API+"/getUpdates", params={"timeout":30,"offset":offset})
+    return r.json().get("result",[])
 
-def card_to_str(c):
-    return c[0] + SUITS.get(c[1], c[1])
+def draw_keyb(rows):
+    return {"keyboard":rows,"resize_keyboard":True,"one_time_keyboard":True}
 
-def beats(att, dfn, trump):
-    r1, s1 = att; r2, s2 = dfn
-    if s1==s2 and RANKS.index(r2)>RANKS.index(r1): return True
+# Monte Carlo: оценить шанс отбоя/атакующего
+def mc_best_defense(att_card, state, trials=200):
+    # state: my_cards, opp_count, deck_count, gone, trump
+    my = state["my"]
+    opp = state["opp"]
+    deck = state["deck"]
+    gone = state["gone"]
+    trump = state["trump"]
+    # сформируем список возможных карт у оппонента/в колоде
+    remaining = [c for c in FULL_DECK if c not in gone and c not in my]
+    wins = Counter()
+    # для каждой candidate карты защита тестируем trials
+    candidates = [c for c in my
+                  if beats_card(att_card, c, trump)]
+    if not candidates:
+        return None, 0.0
+    for cand in candidates:
+        win = 0
+        for _ in range(trials):
+            # рандомно сгенерировать руку оппонента из remaining
+            opp_hand = np.random.choice(remaining, opp, replace=False)
+            # если ни одна из opp_hand не бьёт cand, считаем выигрыш
+            # простая модель: если никто не может отбить => win
+            if not any(beats_card(cand, parse_card(c2), trump)
+                       for c2 in opp_hand):
+                win += 1
+        wins[cand] = win
+    # выбрать карту, при которой больше всего win
+    best, win = max(wins.items(), key=lambda kv: kv[1])
+    return best, win / (trials)
+
+def parse_card(c): return (c[:-1], c[-1])
+def beats_card(att, dfn, trump):
+    r1,s1 = parse_card(att); r2,s2 = dfn
+    idx = RANKS.index
+    if s1==s2 and idx(r2)>idx(r1): return True
     if s2==trump and s1!=trump: return True
     return False
-
-def do_walk(sess, card=None):
-    if card:
-        c = parse_card(card)
-        if c in sess["my"]:
-            sess["my"].remove(c)
-        else:
-            sess["unknown"] = max(0, sess["unknown"]-1)
-    else:
-        non_tr = [c for c in sess["my"] if c[1]!=sess["trump"]]
-        pick = (min(non_tr, key=lambda x:RANKS.index(x[0]))
-                if non_tr else min(sess["my"], key=lambda x:RANKS.index(x[0])))
-        sess["my"].remove(pick)
-        c = pick
-    chance = (len(sess["my"])+sess["unknown"]) / ((len(sess["my"])+sess["unknown"])+sess["opp"]) * 100
-    return f"▶ Ходи: {card_to_str(c)}\n▶ Шанс ≈ {chance:.0f}%"
-
-def do_def(sess, att_card):
-    att = parse_card(att_card)
-    cand = [c for c in sess["my"] if beats(att, c, sess["trump"])]
-    if cand:
-        pick = min(cand, key=lambda x:(x[1]!=sess["trump"], RANKS.index(x[0])))
-        sess["my"].remove(pick)
-        msg = f"▶ Отбивайся: {card_to_str(pick)}"
-    else:
-        sess["unknown"] = max(0, sess["unknown"]-1)
-        msg = "▶ Отбивайся: [неизвестная карта]"
-    chance = (len(sess["my"])+sess["unknown"]) / ((len(sess["my"])+sess["unknown"])+sess["opp"]) * 100
-    return f"{msg}\n▶ Шанс ≈ {chance:.0f}%"
-
-def do_otb(sess):
-    draws_me = min(sess["max_hand"] - (len(sess["my"])+sess["unknown"]), sess["deck"])
-    sess["unknown"] += draws_me; sess["deck"] -= draws_me
-    draws_op = min(sess["max_hand"] - sess["opp"], sess["deck"])
-    sess["opp"] += draws_op; sess["deck"] -= draws_op
-    return (f"▶ Раунд завершён.\n"
-            f"Добрано: тебе +{draws_me}, сопернику +{draws_op}\n"
-            f"В колоде осталось {sess['deck']}")
-
-def do_stat(sess):
-    total_my = len(sess["my"])+sess["unknown"]
-    total_opp = sess["opp"]
-    if total_my+total_opp==0:
-        return "▶ Нет карт — нечего считать."
-    chance = total_my/(total_my+total_opp)*100
-    return f"▶ Шанс победы ≈ {chance:.0f}%"
-
-# Работа с API
-def get_updates(offset=None):
-    params = {"timeout": 30, "offset": offset}
-    resp = requests.get(API_URL + "/getUpdates", params=params)
-    return resp.json()["result"]
-
-def send_message(chat_id, text, reply_markup=None):
-    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        data["reply_markup"] = reply_markup
-    requests.post(API_URL + "/sendMessage", json=data)
-
-# Клавиатуры
-def keyboard(items):
-    return {"keyboard": items, "resize_keyboard": True, "one_time_keyboard": True}
 
 # Основной цикл
 def main():
     offset = None
     while True:
-        updates = get_updates(offset)
-        for upd in updates:
+        for upd in get_updates(offset):
             offset = upd["update_id"] + 1
             msg = upd.get("message")
             if not msg or "text" not in msg: continue
-            chat_id = msg["chat"]["id"]
-            text = msg["text"].strip()
-            sess = sessions[chat_id]
+            chat = msg["chat"]["id"]
+            t = msg["text"].strip()
+            s = sessions[chat]
 
-            # Сценарии
-            if text in ["/start", "/init"]:
-                sess.update({"stage":"choose_trump"})
-                kb = [[ "♠ s", "♥ h" ], [ "♦ d", "♣ c" ]]
-                send_message(chat_id, "Выбери козырь:", reply_markup=keyboard(kb))
-            elif sess["stage"] == "choose_trump" and text in ['s','h','d','c','♠','♥','♦','♣']:
-                trump = text if text in SUITS else {v:k for k,v in SUITS.items()}[text]
-                sess.update({"stage":"enter_cards","trump":trump})
-                send_message(chat_id,
-                    f"Козырь: {SUITS[trump]}\nВведи свои карты (напр. 6s 7h Ah):",
-                    reply_markup={"remove_keyboard":True})
-            elif sess["stage"]=="enter_cards" and text and text.split()[0][:-1] in RANKS:
-                cards = text.split()
-                sess["my"] = [parse_card(c) for c in cards]
-                sess["max_hand"] = len(sess["my"])
-                sess["stage"]="enter_setup"
-                kb = [[ "opp:6 deck:12", "opp:5 deck:13" ]]
-                send_message(chat_id,
-                    f"Твои карты: {' '.join(text.split())}\nТеперь opp и deck:",
-                    reply_markup=keyboard(kb))
-            elif sess["stage"]=="enter_setup" and text.startswith("opp:"):
-                opp, deck = map(int, [text.split()[0].split(":")[1], text.split()[1].split(":")[1]])
-                sess.update({"opp":opp,"deck":deck,"unknown":0,"stage":"play"})
-                kb = [[ "⚔️ walk", "🛡️ def" ], [ "🔄 otb", "📊 stat" ]]
-                send_message(chat_id,
-                    f"Игра началась!\nКозырь {SUITS[sess['trump']]}, у тебя {len(sess['my'])}, у соперника {sess['opp']}, в колоде {sess['deck']}",
-                    reply_markup=keyboard(kb))
-            elif sess["stage"]=="play":
-                if text == "⚔️ walk":
-                    send_message(chat_id, do_walk(sess))
-                elif text == "🛡️ def":
-                    # для простоты: берем атаку '6s'; можно спросить
-                    send_message(chat_id, do_def(sess, "6s"))
-                elif text == "🔄 otb":
-                    send_message(chat_id, do_otb(sess))
-                elif text == "📊 stat":
-                    send_message(chat_id, do_stat(sess))
+            # /start
+            if t in ["/start","/init"] or s["stage"]=="start":
+                s.update(stage="choose_trump", **{k:None for k in ["trump","my","opp","deck","max"]})
+                rows = [[su] for su in SUITS]
+                send(chat, "Выбери козырь:", draw_keyb(rows))
+                continue
+
+            # выбор козыря
+            if s["stage"]=="choose_trump" and t in SUITS:
+                s["trump"] = t
+                s["stage"] = "enter_cards"
+                send(chat,
+                     f"Козырь: {t}\n"
+                     "Введи свои 6 карт (напр. 6♠ 7♥ 8♦ 9♣ J♠ Q♥):",
+                     draw_keyb([]))
+                continue
+
+            # ввод карт
+            if s["stage"]=="enter_cards":
+                cards = t.split()
+                s["my"] = cards
+                s["max"] = len(cards)
+                s["gone"] = set(cards)
+                s["stage"] = "enter_setup"
+                rows = [["opp:6 deck:12"]]
+                send(chat,
+                     f"Ваши карты: {' '.join(cards)}\n"
+                     "Теперь выбери стартовый opp и deck:",
+                     draw_keyb(rows))
+                continue
+
+            # setup
+            if s["stage"]=="enter_setup" and t.startswith("opp:"):
+                opp, deck = map(int, t.replace("opp:","").replace("deck:","").split())
+                s["opp"], s["deck"] = opp, deck
+                s["stage"] = "play"
+                kb = [["⚔️ walk","🛡️ def"],["🔄 otb","📊 stat"]]
+                send(chat,
+                     f"Игра началась!\n"
+                     f"🃏 У вас {len(s['my'])}, у соперника {opp}, в колоде {deck}.",
+                     draw_keyb(kb))
+                continue
+
+            # play
+            if s["stage"]=="play":
+                if t == "⚔️ walk":
+                    # простой walk: Monte Carlo выбирает карту, которую атаковать
+                    best, p = mc_best_defense(t, s)
+                    send(chat, f"▶ Ходите: {best}\n▶ Вероятность непринятия: {p*100:.0f}%")
+                elif t == "🛡️ def":
+                    # предположим атакующая карта хранится в s["last_att"], но для примера:
+                    att = s.get("last_att","6♠")
+                    best, p = mc_best_defense(att, s)
+                    send(chat, f"▶ Отбивайте: {best}\n▶ Вероятность успеха: {p*100:.0f}%")
+                elif t == "🔄 otb":
+                    # добор
+                    draw_you = min(s["max"]-len(s["my"]), s["deck"])
+                    s["deck"] -= draw_you; s["my"] += ["?"]*draw_you
+                    send(chat, f"▶ Раунд окончен. Добрали {draw_you} карт. В колоде {s['deck']}")
+                elif t == "📊 stat":
+                    total = len(s["my"]); opp = s["opp"]
+                    p = total/(total+opp)*100
+                    send(chat, f"▶ Шанс победы ≈ {p:.0f}%")
                 else:
-                    send_message(chat_id, "Неожиданная команда.")
-            else:
-                send_message(chat_id, "Нажми /start чтобы начать.", reply_markup={"remove_keyboard":True})
+                    send(chat, "Нажмите кнопку действия.")
+                continue
+
+            # fallback
+            send(chat, "Напиши /start чтобы начать.")
         time.sleep(1)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
