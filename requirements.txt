@@ -1,2 +1,2 @@
-python-telegram-bot==12.8
+requests>=2.20.0
 numpy>=1.20.0
