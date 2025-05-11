@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, time, random, math, copy
 from collections import Counter, defaultdict
+
 import requests
 import numpy as np
 
@@ -31,7 +32,7 @@ def send_message(chat_id, text, keyboard=None):
     requests.post(f"{API_URL}/sendMessage", json=payload)
 
 # —————————————————————————————————————————————
-#                    Карты и логика
+#                    Карты и утилиты
 # —————————————————————————————————————————————
 def parse_card(c): return c[:-1], c[-1]
 def beats(att, dfn, trump):
@@ -56,9 +57,7 @@ class MCTSState:
         self.my=list(my); self.opp=opp; self.deck=deck
         self.gone=set(gone); self.trump=trump
         self.turn=turn; self.last_att=last_att
-
     def clone(self): return copy.deepcopy(self)
-
     def possible_moves(self):
         moves = {}
         if self.turn=='me' and self.last_att is None:
@@ -79,10 +78,8 @@ class MCTSState:
             st.opp += 1; st.last_att = None; st.turn = 'me'
             moves['take'] = st
         return moves
-
     def is_terminal(self):
         return not self.my or (self.opp==0 and self.deck==0)
-
     def reward(self):
         return 1 if self.opp==0 else 0
 
@@ -90,8 +87,7 @@ class Node:
     def __init__(self,state,parent=None):
         self.state=state; self.parent=parent
         self.children={}; self.wins=0; self.visits=0
-
-    def ucb(self, child):
+    def ucb(self,child):
         return child.wins/child.visits + math.sqrt(2*math.log(self.visits)/child.visits)
 
 def mcts(root_state, iters=300):
@@ -102,7 +98,7 @@ def mcts(root_state, iters=300):
             node = max(node.children.values(), key=lambda c: node.ucb(c))
         moves = node.state.possible_moves()
         if moves and node.visits>0:
-            for mv, st in moves.items():
+            for mv,st in moves.items():
                 node.children[mv] = Node(st, node)
             node = random.choice(list(node.children.values()))
         sim = node.state.clone()
@@ -130,7 +126,7 @@ def kb_def(av):   return [av[i:i+4] for i in range(0,len(av),4)] + [["Не от�
 # —————————————————————————————————————————————
 #                      Сессии
 # —————————————————————————————————————————————
-sessions = defaultdict(lambda: {
+sessions = defaultdict(lambda:{
     "stage":"start","trump":None,"available":[], "my":[],
     "opp":0,"deck":0,"max":0,"gone":set(),
     "last_att":None,"pending":0,"turn":None
@@ -149,49 +145,58 @@ def main():
             ch, txt = msg["chat"]["id"], msg["text"].strip()
             s = sessions[ch]
 
-            # старт
-            if txt.lower() in ("/start","/init") or s["stage"]=="start":
+            # 1) старт или /start
+            if s["stage"]=="start" or txt.lower() in ("/start","/init"):
                 s.update(stage="choose_trump", my=[], gone=set(), pending=0, last_att=None)
                 send_message(ch, "Выберите козырь:", kb_trump())
                 continue
 
-            # выбор козыря
+            # 2) выбор козыря
             if s["stage"]=="choose_trump" and txt in SUITS:
-                s["trump"]=txt; s["stage"]="enter_cards"
-                s["available"]=FULL.copy(); s["my"]=[]
+                s["trump"] = txt
+                s["stage"] = "enter_cards"
+                s["available"] = FULL.copy()
+                s["my"] = []
                 send_message(ch, f"Козырь: {txt}\nВыберите 6 карт:", kb_cards(s["available"]))
                 continue
 
-            # ввод карт
+            # 3) ввод 6 карт
             if s["stage"]=="enter_cards":
                 if txt=="✅ Готово":
                     if len(s["my"])<6:
                         send_message(ch, f"Нужно 6 карт, выбрано {len(s['my'])}", kb_cards(s["available"]))
                     else:
-                        s["max"]=6; s["gone"]=set(s["my"]); s["stage"]="choose_first"
+                        s["max"] = 6
+                        s["gone"] = set(s["my"])
+                        s["stage"] = "choose_first"
                         send_message(ch, "Кто ходит первым?", kb_first())
                 elif txt in s["available"]:
-                    s["my"].append(txt); s["available"].remove(txt)
+                    s["my"].append(txt)
+                    s["available"].remove(txt)
                     send_message(ch, f"Выбрано {len(s['my'])}/6", kb_cards(s["available"]))
                 else:
                     send_message(ch, "Нажмите карту или ✅ Готово", kb_cards(s["available"]))
                 continue
 
-            # первый ход
+            # 4) выбор первого
             if s["stage"]=="choose_first" and txt in ("Я","Соперник"):
-                s["turn"]="me" if txt=="Я" else "opp"
-                s["stage"]="play"; s["opp"]=6; s["deck"]=12
+                s["turn"] = "me" if txt=="Я" else "opp"
+                s["stage"] = "play"
+                s["opp"] = 6
+                s["deck"] = 12
                 send_message(ch, "Игра началась!", kb_play())
                 continue
 
-            # атака
+            # 5) стадия play
             if s["stage"]=="play":
                 if txt=="⚔️ walk":
                     st = MCTSState(s["my"], s["opp"], s["deck"], s["gone"], s["trump"], "me")
                     mv = mcts(st, iters=500)
                     card = mv
-                    s["last_att"]=card; s["my"].remove(card); s["gone"].add(card)
-                    s["stage"]="defense"
+                    s["last_att"] = card
+                    s["my"].remove(card)
+                    s["gone"].add(card)
+                    s["stage"] = "defense"
                     defenders = [c for c in s["my"] if beats(card, parse_card(c), s["trump"])]
                     send_message(ch, f"⚔️ Вы ходите {card}\nСоперник отбивается:", kb_def(defenders))
                     continue
@@ -201,35 +206,49 @@ def main():
                     send_message(ch, f"Шанс ≈ {pct:.0f}%", kb_play())
                     continue
 
-            # защита
+            # 6) стадия defense
             if s["stage"]=="defense":
                 if txt=="Не отбился":
                     draws = min(s["max"]-len(s["my"]), s["deck"])
-                    s["deck"]-=draws; s["pending"]=draws; s["stage"]="pickup"
-                    pool=[c for c in FULL if c not in s["gone"] and c not in s["my"]]
+                    s["deck"] -= draws
+                    s["pending"] = draws
+                    s["stage"] = "pickup"
+                    pool = [c for c in FULL if c not in s["gone"] and c not in s["my"]]
                     send_message(ch, f"Соперник не отбился. Добор {draws} карт:", kb_cards(pool))
                     continue
                 if txt in s["my"] and beats(s["last_att"], parse_card(txt), s["trump"]):
-                    s["my"].remove(txt); s["gone"].add(txt)
+                    s["my"].remove(txt)
+                    s["gone"].add(txt)
                     draws = min(s["max"]-len(s["my"]), s["deck"])
-                    s["deck"]-=draws; s["pending"]=draws; s["stage"]="pickup"
-                    pool=[c for c in FULL if c not in s["gone"] and c not in s["my"]]
+                    s["deck"] -= draws
+                    s["pending"] = draws
+                    s["stage"] = "pickup"
+                    pool = [c for c in FULL if c not in s["gone"] and c not in s["my"]]
                     send_message(ch, f"Соперник отбился {txt}. Добор {draws} карт:", kb_cards(pool))
                     continue
-
-            # добор
-            if s["stage"]=="pickup":
-                if txt=="✅ Готово":
-                    s["pending"]=0; s["stage"]="play"
-                    send_message(ch, "Продолжаем раунд", kb_play())
-                elif txt in s["available"] and s["pending"]>0:
-                    s["my"].append(txt); s["available"].remove(txt); s["pending"]-=1
-                    send_message(ch, f"Взяли {txt}, осталось взять {s['pending']}", kb_cards(s["available"]))
-                else:
-                    send_message(ch, "Нажмите карту или ✅ Готово", kb_cards(s["available"]))
+                # некорректный ввод – просто повторяем клавиатуру защиты
+                defenders = [c for c in s["my"] if beats(s["last_att"], parse_card(c), s["trump"])]
+                send_message(ch, "Выберите карту защиты или «Не отбился»", kb_def(defenders))
                 continue
 
-            # fallback
+            # 7) стадия pickup
+            if s["stage"]=="pickup":
+                if txt=="✅ Готово":
+                    s["pending"] = 0
+                    s["stage"] = "play"
+                    send_message(ch, "Продолжаем раунд", kb_play())
+                    continue
+                if txt in s["available"] and s["pending"]>0:
+                    s["my"].append(txt)
+                    s["available"].remove(txt)
+                    s["pending"] -= 1
+                    send_message(ch, f"Взяли {txt}, осталось взять {s['pending']}", kb_cards(s["available"]))
+                    continue
+                # некорректный ввод – повторяем клавиатуру добора
+                send_message(ch, "Нажмите карту или ✅ Готово", kb_cards(s["available"]))
+                continue
+
+            # 8) fallback
             send_message(ch, "Введите /start для новой игры")
         time.sleep(1)
 
